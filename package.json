@@ -1,11 +1,13 @@
 {
   "name": "slums-launcher",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "scripts": {
     "dev": "serve src/ -l 1420 --no-clipboard --single",
     "tauri": "tauri",
-    "build": "tauri build"
+    "build:frontend": "mkdir -p dist && cp -r src/* dist/",
+    "postbuild:appimage": "bash scripts/patch-appimage.sh",
+    "build": "npm run build:frontend && tauri build && npm run postbuild:appimage"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.4",
