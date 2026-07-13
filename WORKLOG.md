@@ -104,3 +104,38 @@ npm run build
 2. **EGL on headless/no-GPU Linux** — mitigated by AppRun env vars, may still need `libegl1-mesa`
 3. **Windows build not yet tested fully** — compiles, IPC fix in place, needs end-to-end test
 4. **Addon API simple format** — `/api/addons` returns file list only; for rich metadata (images, descriptions), host a Relictum-format `addons.json`
+
+---
+
+## 21:45 — Independently hosted addon catalog
+
+- Goal: own addon mirror, not dependent on Relictum
+- Analyzed Relictum's pipeline: Warperia scrape → `_backup_addons/` → GitHub mirror → `build-addons.js` → `addons.json`
+- GitHub mirror repo (`Litas-dev/Azeroth-Legacy-Addons-Mirror`) hosts 1.6GB of ZIPs, logos, screenshots — 698 addons
+- Couldn't fork via API (403), cloned it directly instead
+- Created `joshhmann/the-slums-addons` — empty public repo
+- Cloned Relictum mirror (1.6GB, 3008 files), pushed to our repo as initial commit
+- Wrote `scripts/build-addons.js` — reads per-addon `addon.json` metadata, finds ZIPs/logos, generates `addons.json` with our URLs
+- Built `addons.json` — 698 addons, all pointing to `raw.githubusercontent.com/joshhmann/the-slums-addons/main/<addon>/<version>.zip`
+- Custom "The Slums" addons (PlayerBots, etc.) still served from `wowslums.asslorde.com/downloads/addons/`
+- Copied final `addons.json` to webapp's `static/downloads/`, committed all three repos
+
+## 22:00 — Final architecture
+
+| Repo | Purpose | Visibility |
+|---|---|---|
+| `joshhmann/the-slums-launcher` | Tauri v2 launcher | private |
+| `joshhmann/the-slums-webapp` | Flask API + downloads | private |
+| `joshhmann/the-slums-addons` | Addon ZIP mirror (698 addons, 1.6GB) | **public** |
+
+**Addon flow:** Launcher fetches addons.json from webapp → webapp serves from `static/downloads/` → addon ZIPs download from GitHub raw CDN on our mirror.
+
+**To update addons:** Drop new ZIP into `the-slums-addons/<folder>/`, add metadata `addon.json`, run `node scripts/build-addons.js`, push, copy `addons.json` to webapp. Can be automated with a GitHub Action.
+
+## Known issues (updated)
+
+1. **Cargo caches build script output** — after changing HTML/CSS/JS, must `cargo clean` or touch `build.rs` to force re-embed
+2. **EGL on headless/no-GPU Linux** — mitigated by AppRun env vars, may still need `libegl1-mesa`
+3. **Windows build not yet tested end-to-end** — compiles, IPC modules in place, needs full flow test with webapp running
+4. **custom "The Slums" addons** — first 5 entries in addons.json still need their ZIPs hosted at `wowslums.asslorde.com/downloads/addons/`. The ones already there (PlayerBots.zip, etc.) work. Missing ones will fail to install silently.
+5. **Webapp restart needed** — after copying new addons.json or manifest.json, the Flask app needs a restart

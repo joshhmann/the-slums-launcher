@@ -1,6 +1,6 @@
 {
   "manifest_url": "https://wowslums.asslorde.com/api/manifest.json",
-  "addons_url": "https://wowslums.asslorde.com/api/addons",
+  "addons_url": "https://wowslums.asslorde.com/api/addons.json",
   "server_address": "wow.asslorde.com",
   "account_url": "https://wowslums.asslorde.com/register",
   "app_name": "The Slums",
