@@ -5,9 +5,9 @@
   "scripts": {
     "dev": "serve src/ -l 1420 --no-clipboard --single",
     "tauri": "tauri",
-    "build:frontend": "mkdir -p dist && cp -r src/* dist/",
-    "postbuild:appimage": "bash scripts/patch-appimage.sh",
-    "build": "npm run build:frontend && tauri build && npm run postbuild:appimage"
+    "build:frontend": "node scripts/build-frontend.js",
+    "postbuild:appimage": "node scripts/patch-appimage.js",
+    "build": "npm run build:frontend && tauri build"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.4",
