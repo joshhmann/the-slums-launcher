@@ -177,6 +177,72 @@ $('#btn-clear-cache')?.addEventListener('click', async () => {
   }
 });
 
+// ── Add Existing Install ─────────────────────────
+
+$('#btn-add-existing')?.addEventListener('click', async () => {
+  try {
+    const path = await invoke('select_game_path');
+    if (!path) return;
+    gamePath.value = path;
+    config.game_path = path;
+    await invoke('save_settings', { game_path: path });
+    updateClientState();
+    showToast('Game path set', 'success');
+  } catch (e) {
+    showToast('Failed: ' + e, 'error');
+  }
+});
+
+// ── Settings Modal ───────────────────────────────
+
+$('#btn-settings')?.addEventListener('click', () => {
+  $('#settings-manifest-url').value = config.manifest_url || '';
+  $('#settings-addons-url').value = config.addons_url || '';
+  $('#settings-server-address').value = config.server_address || '';
+  $('#settings-account-url').value = config.account_url || '';
+  $('#settings-modal').classList.remove('hidden');
+});
+
+document.querySelector('.modal-close-settings')?.addEventListener('click', () => {
+  $('#settings-modal').classList.add('hidden');
+});
+
+$('#settings-modal')?.addEventListener('click', (e) => {
+  if (e.target === $('#settings-modal')) $('#settings-modal').classList.add('hidden');
+});
+
+$('#btn-settings-save')?.addEventListener('click', async () => {
+  config.manifest_url = $('#settings-manifest-url').value;
+  config.addons_url = $('#settings-addons-url').value;
+  config.server_address = $('#settings-server-address').value;
+  config.account_url = $('#settings-account-url').value;
+  await invoke('save_settings', { game_path: config.game_path });
+  // Note: full config object save not supported yet — these read from embedded config
+  el.playServer.textContent = config.server_address;
+  el.statServer.textContent = config.server_address;
+  $('#header-server').textContent = config.server_address;
+  $('#settings-modal').classList.add('hidden');
+  showToast('Settings saved', 'success');
+});
+
+$('#btn-settings-reset')?.addEventListener('click', async () => {
+  config = await invoke('get_config');
+  el.playServer.textContent = config.server_address || '';
+  $('#header-server').textContent = config.server_address || '';
+  $('#settings-modal').classList.add('hidden');
+  showToast('Settings reset', 'success');
+});
+
+// ── Realmlist ────────────────────────────────────
+
+async function loadRealmlist() {
+  try {
+    const content = await invoke('get_realmlist');
+    const match = content.match(/^set\s+realmlist\s+(.+)/im);
+    if (match) el.statServer.textContent = match[1].trim();
+  } catch { /* no realmlist yet */ }
+}
+
 // ── Register Button ─────────────────────────────
 
 $('#btn-register')?.addEventListener('click', async () => {

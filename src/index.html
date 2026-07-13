@@ -22,6 +22,7 @@
         <button class="tab-btn" data-tab="addons">Addons</button>
       </nav>
       <button class="btn-register" id="btn-register">Register Account</button>
+      <button class="btn-settings" id="btn-settings" title="Settings">⚙</button>
     </header>
 
     <main>
@@ -34,6 +35,7 @@
             <h2 id="tagline">AzerothCore WotLK 3.3.5a</h2>
             <p class="hero-note">First-time download: ~8 GB</p>
             <button class="btn-primary" id="btn-install">Install Game</button>
+            <p class="hero-sub">or <button class="btn-link" id="btn-add-existing">add existing install</button></p>
           </div>
         </div>
 
@@ -120,6 +122,28 @@
         <p id="modal-desc"></p>
         <div class="modal-actions">
           <button class="btn-primary" id="modal-action">Install</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Settings Modal -->
+    <div id="settings-modal" class="modal-overlay hidden">
+      <div class="modal-card">
+        <button class="modal-close-settings">&times;</button>
+        <h3>Settings</h3>
+        <div class="settings-form">
+          <label>Manifest URL</label>
+          <input type="text" id="settings-manifest-url" />
+          <label>Addon Catalog URL</label>
+          <input type="text" id="settings-addons-url" />
+          <label>Server Address</label>
+          <input type="text" id="settings-server-address" />
+          <label>Account URL</label>
+          <input type="text" id="settings-account-url" />
+          <div class="settings-form-actions">
+            <button class="btn-secondary" id="btn-settings-save">Save</button>
+            <button class="btn-secondary" id="btn-settings-reset">Reset to defaults</button>
+          </div>
         </div>
       </div>
     </div>

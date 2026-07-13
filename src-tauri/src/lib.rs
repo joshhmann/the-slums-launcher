@@ -141,10 +141,15 @@ fn game_dir(config: &Config) -> Option<PathBuf> {
 }
 
 fn find_wow_exe(dir: &PathBuf) -> Option<PathBuf> {
+    let wow = dir.join("wow.exe");
+    if wow.exists() { return Some(wow); }
+    let patcher = dir.join("patchmenu.exe");
+    if patcher.exists() { return Some(patcher); }
+
     let entries = std::fs::read_dir(dir).ok()?;
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().to_lowercase();
-        if name == "wow.exe" || name == "wowclassic.exe" || name == "world of warcraft.exe" {
+        if name == "wowclassic.exe" || name == "world of warcraft.exe" {
             return Some(entry.path());
         }
         if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
