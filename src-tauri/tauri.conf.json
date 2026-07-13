@@ -1,0 +1,37 @@
+{
+  "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/dev/crates/tauri-config-schema/schema.json",
+  "productName": "The Slums Launcher",
+  "version": "1.0.0",
+  "identifier": "com.theslums.launcher",
+  "build": {
+    "frontendDist": "../src",
+    "beforeBuildCommand": "true"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "The Slums Launcher",
+        "width": 920,
+        "height": 720,
+        "resizable": true,
+        "center": true,
+        "minWidth": 760,
+        "minHeight": 600
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  }
+}

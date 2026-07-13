@@ -1,0 +1,14 @@
+{
+  "name": "slums-launcher",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "serve src/ -l 1420 --no-clipboard --single",
+    "tauri": "tauri",
+    "build": "tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.11.4",
+    "serve": "^14.2.0"
+  }
+}
