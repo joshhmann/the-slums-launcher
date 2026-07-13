@@ -1,5 +1,5 @@
-const { invoke } = window.__TAURI__?.core ?? {};
-const { listen } = window.__TAURI__?.event ?? {};
+import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => document.querySelectorAll(s);
@@ -58,7 +58,6 @@ function showToast(msg, type = 'info') {
 // ── Init ────────────────────────────────────────
 
 async function init() {
-  if (!invoke) return;
   try {
     config = await invoke('get_config');
     el.appName.textContent = config.app_name || 'The Slums';
@@ -110,7 +109,6 @@ function formatSize(bytes) {
 // ── Install Button ──────────────────────────────
 
 $('#btn-install')?.addEventListener('click', async () => {
-  if (!invoke) return;
   el.stateNotInstalled.classList.add('hidden');
   el.stateDownloading.classList.remove('hidden');
   el.progressPhase.textContent = 'Preparing...';
@@ -132,7 +130,6 @@ $('#btn-install')?.addEventListener('click', async () => {
 // ── Check for Updates ───────────────────────────
 
 $('#btn-check-update')?.addEventListener('click', async () => {
-  if (!invoke) return;
   el.stateReady.classList.add('hidden');
   el.stateDownloading.classList.remove('hidden');
   el.progressPhase.textContent = 'Checking for updates...';
@@ -152,7 +149,6 @@ $('#btn-check-update')?.addEventListener('click', async () => {
 // ── Play Button ─────────────────────────────────
 
 $('#btn-play')?.addEventListener('click', async () => {
-  if (!invoke) return;
   try {
     await invoke('launch_game');
     showToast('Game launched!', 'success');
@@ -164,7 +160,6 @@ $('#btn-play')?.addEventListener('click', async () => {
 // ── Clear Cache ─────────────────────────────────
 
 $('#btn-clear-cache')?.addEventListener('click', async () => {
-  if (!invoke) return;
   try {
     await invoke('clear_cache');
     showToast('Cache cleared', 'success');
@@ -182,8 +177,7 @@ $('#btn-register')?.addEventListener('click', async () => {
 
 // ── Download Progress ───────────────────────────
 
-if (listen) {
-  listen('client-progress', (event) => {
+listen('client-progress', (event) => {
     const p = event.payload;
     el.stateNotInstalled.classList.add('hidden');
     el.stateReady.classList.add('hidden');
@@ -204,14 +198,12 @@ if (listen) {
       setTimeout(() => updateClientState(), 1000);
     }
   });
-}
 
 // ── Addons ──────────────────────────────────────
 
 refreshAddonCount();
 
 async function loadAddons() {
-  if (!invoke) return;
   try {
     addonList = await invoke('fetch_addon_list');
     installedAddons = await invoke('list_installed_addons');
@@ -371,7 +363,6 @@ function createFolderName(name) {
 }
 
 async function doInstall(addon) {
-  if (!invoke) return;
   const name = addon.title || addon.name || 'Unknown';
   showToast('Installing ' + name + '...', 'info');
   try {
@@ -387,7 +378,6 @@ async function doInstall(addon) {
 }
 
 async function doRemove(addon) {
-  if (!invoke) return;
   const name = addon.title || addon.name || 'Unknown';
   const folderName = createFolderName(name);
   showToast('Removing ' + name + '...', 'info');

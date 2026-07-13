@@ -24,4 +24,11 @@ function copyDir(src, dest) {
 }
 
 copyDir(srcDir, distDir);
+
+// Copy @tauri-apps/api into dist for import maps
+const apiSrc = path.join(__dirname, '..', 'node_modules', '@tauri-apps', 'api');
+const apiDest = path.join(distDir, 'node_modules', '@tauri-apps', 'api');
+fs.mkdirSync(apiDest, { recursive: true });
+copyDir(apiSrc, apiDest);
+
 console.log(`Copied ${srcDir} -> ${distDir}`);
