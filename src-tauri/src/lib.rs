@@ -1,7 +1,9 @@
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -11,7 +13,6 @@ use tauri_plugin_opener::OpenerExt;
 static DEFAULT_CONFIG: &str = include_str!("../config.json");
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
 struct Config {
     #[serde(default)]
     game_path: Option<String>,
@@ -92,6 +93,7 @@ struct ClientSyncProgress {
 struct AppState {
     config: Mutex<Config>,
     config_path: PathBuf,
+    download_paused: AtomicBool,
 }
 
 fn config_dir(app: &tauri::AppHandle) -> PathBuf {
@@ -507,14 +509,20 @@ async fn download_client(
 
     for file in &manifest.files {
         let local = dir.join(&file.path);
+        if local.is_dir() {
+            scanned += 1;
+            continue;
+        }
         let needs = if local.exists() {
             compute_sha256(&local).map_or(true, |h| h != file.sha256)
         } else { true };
         if needs { to_download.push(file); }
         scanned += 1;
         if scanned % 50 == 0 || scanned == total {
+            // cap at total-1 so progress never hits 100% before syncing starts
+            let display = if scanned == total { total - 1 } else { scanned };
             emit(&app, "client-progress", ClientSyncProgress {
-                downloaded: scanned, total, speed: "".into(),
+                downloaded: display, total, speed: "".into(),
                 phase: "scanning".into(),
                 message: format!("Scanned {}/{} files ({} to sync)", scanned, total, to_download.len()),
             }).ok();
@@ -539,10 +547,23 @@ async fn download_client(
     }
 
     let dl_total = to_download.len() as u64;
+    let offset = total - dl_total; // files already up to date — keeps progress smooth
     let mut dl_current: u64 = 0;
     let start = std::time::Instant::now();
+    let mut cumulative_bytes: u64 = 0;
 
     for file in &to_download {
+        // Check pause flag — wait until resumed
+        while state.download_paused.load(Ordering::Relaxed) {
+            emit(&app, "client-progress", ClientSyncProgress {
+                downloaded: offset + dl_current, total,
+                speed: String::new(),
+                phase: "paused".into(),
+                message: format!("Paused — {}/{} files", dl_current, dl_total),
+            }).ok();
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+
         let file_url = if base_url.ends_with('/') {
             format!("{}{}", base_url, file.path)
         } else {
@@ -561,16 +582,28 @@ async fn download_client(
         }
         let bytes = response.bytes().await
             .map_err(|e| format!("Download error: {}", e))?;
-        let mut f = std::fs::File::create(&local).map_err(|e| e.to_string())?;
-        f.write_all(&bytes).map_err(|e| e.to_string())?;
+        cumulative_bytes += bytes.len() as u64;
+
+        // Atomic write: temp file then rename to prevent partial files on crash
+        let tmp = local.with_extension("tmp");
+        {
+            let mut f = std::fs::File::create(&tmp).map_err(|e| e.to_string())?;
+            f.write_all(&bytes).map_err(|e| e.to_string())?;
+        }
+        std::fs::rename(&tmp, &local).map_err(|e| e.to_string())?;
 
         dl_current += 1;
-        let elapsed = start.elapsed().as_secs().max(1);
+        let elapsed = start.elapsed().as_secs_f64().max(0.001);
+        let speed = if cumulative_bytes > 0 {
+            format!("{:.1} MB/s", cumulative_bytes as f64 / elapsed / 1_048_576.0)
+        } else {
+            String::new()
+        };
         emit(&app, "client-progress", ClientSyncProgress {
-            downloaded: dl_current, total: dl_total,
-            speed: format!("{:.1} MB/s", (scanned * 1024) as f64 / elapsed as f64 / 1_048_576.0),
+            downloaded: offset + dl_current, total,
+            speed,
             phase: "syncing".into(),
-            message: format!("Syncing {}/{} files: {}", dl_current, dl_total, file.path),
+            message: format!("Downloading {}/{} files: {}", dl_current, dl_total, file.path),
         }).ok();
     }
 
@@ -586,8 +619,8 @@ async fn download_client(
     }
 
     emit(&app, "client-progress", ClientSyncProgress {
-        downloaded: dl_total, total: dl_total, speed: "".into(),
-        phase: "complete".into(), message: "Client ready!".into(),
+        downloaded: total, total, speed: "".into(),
+        phase: "complete".into(), message: "Game ready!".into(),
     }).ok();
 
     Ok(exe_str)
@@ -619,6 +652,24 @@ fn open_url(app: tauri::AppHandle, url: String) -> Result<(), String> {
     app.opener().open_url(url, None::<&str>).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+fn pause_download(state: State<AppState>) {
+    state.download_paused.store(true, Ordering::Relaxed);
+}
+
+#[tauri::command]
+fn resume_download(state: State<AppState>) {
+    state.download_paused.store(false, Ordering::Relaxed);
+}
+
+#[tauri::command]
+async fn repair_game(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    download_client(app, state).await
+}
+
 // ── App entry ───────────────────────────────────────────────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -639,6 +690,7 @@ pub fn run() {
             app.manage(AppState {
                 config: Mutex::new(config),
                 config_path,
+                download_paused: AtomicBool::new(false),
             });
             Ok(())
         })
@@ -657,6 +709,9 @@ pub fn run() {
             get_realmlist,
             set_realmlist,
             open_url,
+            pause_download,
+            resume_download,
+            repair_game,
         ])
         .run(tauri::generate_context!())
         .expect("error while running application");

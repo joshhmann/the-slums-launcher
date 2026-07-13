@@ -49,6 +49,17 @@ nav { display:flex; gap:4px; }
 .tab-btn:hover { color:var(--text); background:var(--bg-hover); }
 .tab-btn.active { color:var(--gold); border-color:var(--gold); background:var(--gold-glow); }
 
+.server-badge {
+  display:flex; align-items:center; gap:6px; padding:4px 12px;
+  border:1px solid var(--border); border-radius:20px; background:var(--bg-primary);
+  font-size:12px; color:var(--text-dim); white-space:nowrap;
+}
+.server-dot {
+  width:7px; height:7px; border-radius:50%; background:var(--success);
+  box-shadow:0 0 6px var(--success); flex-shrink:0;
+}
+#header-server { color:var(--text); font-weight:500; }
+
 .btn-register {
   margin-left:auto; padding:7px 18px; border:1px solid var(--gold-dim); border-radius:var(--radius);
   background:transparent; color:var(--gold-dim); font-size:12px; cursor:pointer; transition:all .2s;
@@ -94,7 +105,15 @@ main { flex:1; overflow-y:auto; padding:32px 24px; }
 
 /* Ready state */
 .hero-play { text-align:center; padding:50px 20px 30px; }
-.play-footnote { font-size:13px; color:var(--text-dim); margin:12px 0 10px; }
+.play-server-info {
+  display:flex; align-items:center; justify-content:center; gap:8px;
+  margin:14px 0 10px; font-size:13px; color:var(--text-dim);
+}
+.play-server-info .server-dot {
+  width:6px; height:6px; background:var(--success); box-shadow:0 0 5px var(--success);
+}
+.play-realm-type { color:var(--text-dim); opacity:.7; font-size:12px; }
+#play-server { color:var(--text-bright); font-weight:500; }
 
 .stats-card {
   max-width:380px; margin:0 auto; padding:16px 20px;
@@ -213,6 +232,31 @@ main { flex:1; overflow-y:auto; padding:32px 24px; }
 .toast.hidden { opacity:0; pointer-events:none; }
 .toast.success { border-color:var(--success); }
 .toast.error { border-color:var(--danger); }
+
+/* Overlay progress — covers main area so it's visible across all tabs */
+.overlay-progress {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-primary);
+  z-index: 10;
+}
+.overlay-progress.hidden { display: none; }
+.progress-card { max-width:500px; margin:0 auto; text-align:center; }
+.progress-actions { margin-top:16px; display:flex; justify-content:center; gap:10px; }
+.btn-pause {
+  padding:8px 28px; border:1px solid var(--gold-dim); border-radius:var(--radius);
+  background:transparent; color:var(--gold-dim); font-size:13px; cursor:pointer; transition:all .2s;
+}
+.btn-pause:hover { background:var(--gold-glow); color:var(--gold); }
+.btn-pause.resumed { border-color:var(--success); color:var(--success); }
+.btn-pause.resumed:hover { background:rgba(39,174,96,0.1); color:var(--success); }
+
+/* Small link-style button for stats card */
+.btn-sm { padding:6px 12px; font-size:11px; }
+.btn-link.btn-sm { background:none; border:none; }
 
 ::-webkit-scrollbar { width:6px; }
 ::-webkit-scrollbar-track { background:transparent; }

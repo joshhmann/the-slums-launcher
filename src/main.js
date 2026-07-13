@@ -6,6 +6,7 @@ const $$ = (s) => document.querySelectorAll(s);
 
 let config = {};
 let clientStatus = null;
+let isDownloading = false;
 let addonList = [];
 let installedAddons = [];
 let addonPage = 1;
@@ -64,6 +65,7 @@ async function init() {
     el.tagline.textContent = config.app_tagline || 'AzerothCore WotLK 3.3.5a';
     el.playServer.textContent = config.server_address || '';
     el.statServer.textContent = config.server_address || '';
+    $('#header-server').textContent = config.server_address || '';
     updateClientState();
   } catch (e) { console.error('Init failed:', e); }
 }
@@ -78,8 +80,9 @@ async function updateClientState() {
   }
 
   el.stateNotInstalled.classList.add('hidden');
-  el.stateDownloading.classList.add('hidden');
   el.stateReady.classList.add('hidden');
+  // don't hide downloading state if a download is active
+  if (!isDownloading) el.stateDownloading.classList.add('hidden');
 
   const s = clientStatus;
   if (!s || s.phase === 'not_installed') {
@@ -109,18 +112,21 @@ function formatSize(bytes) {
 // ── Install Button ──────────────────────────────
 
 $('#btn-install')?.addEventListener('click', async () => {
+  isDownloading = true;
   el.stateNotInstalled.classList.add('hidden');
   el.stateDownloading.classList.remove('hidden');
-  el.progressPhase.textContent = 'Preparing...';
+  el.progressPhase.textContent = 'Starting...';
   el.progressFill.style.width = '0%';
   el.progressStatus.textContent = '';
   el.progressDetail.textContent = '';
 
   try {
     const path = await invoke('download_client');
-    showToast('Client installed!', 'success');
+    isDownloading = false;
+    showToast('Game installed!', 'success');
     updateClientState();
   } catch (e) {
+    isDownloading = false;
     showToast('Download failed: ' + e, 'error');
     el.stateDownloading.classList.add('hidden');
     el.stateNotInstalled.classList.remove('hidden');
@@ -130,17 +136,20 @@ $('#btn-install')?.addEventListener('click', async () => {
 // ── Check for Updates ───────────────────────────
 
 $('#btn-check-update')?.addEventListener('click', async () => {
+  isDownloading = true;
   el.stateReady.classList.add('hidden');
   el.stateDownloading.classList.remove('hidden');
-  el.progressPhase.textContent = 'Checking for updates...';
+  el.progressPhase.textContent = 'Updating...';
   el.progressFill.style.width = '0%';
   el.progressStatus.textContent = '';
 
   try {
     const path = await invoke('download_client');
-    showToast('Client up to date!', 'success');
+    isDownloading = false;
+    showToast('Game is up to date!', 'success');
     updateClientState();
   } catch (e) {
+    isDownloading = false;
     showToast('Update failed: ' + e, 'error');
     updateClientState();
   }
@@ -171,14 +180,69 @@ $('#btn-clear-cache')?.addEventListener('click', async () => {
 // ── Register Button ─────────────────────────────
 
 $('#btn-register')?.addEventListener('click', async () => {
-  if (!invoke || !config.account_url) return;
-  await invoke('open_url', { url: config.account_url });
+  if (!config.account_url) {
+    showToast('Account URL not configured', 'error');
+    return;
+  }
+  try {
+    await invoke('open_url', { url: config.account_url });
+  } catch (e) {
+    showToast('Failed to open browser: ' + e, 'error');
+  }
+});
+
+// ── Pause / Resume ──────────────────────────────
+
+let paused = false;
+$('#btn-pause')?.addEventListener('click', async () => {
+  if (paused) {
+    await invoke('resume_download');
+    paused = false;
+    $('#btn-pause').textContent = 'Pause';
+    $('#btn-pause').classList.remove('resumed');
+  } else {
+    await invoke('pause_download');
+    paused = true;
+    $('#btn-pause').textContent = 'Resume';
+    $('#btn-pause').classList.add('resumed');
+  }
+});
+
+// ── Repair ──────────────────────────────────────
+
+$('#btn-repair')?.addEventListener('click', async () => {
+  isDownloading = true;
+  el.stateReady.classList.add('hidden');
+  el.stateDownloading.classList.remove('hidden');
+  el.progressPhase.textContent = 'Repairing...';
+  el.progressFill.style.width = '0%';
+  el.progressStatus.textContent = '';
+  el.progressDetail.textContent = '';
+
+  try {
+    const path = await invoke('repair_game');
+    isDownloading = false;
+    showToast('Repair complete!', 'success');
+    updateClientState();
+  } catch (e) {
+    isDownloading = false;
+    showToast('Repair failed: ' + e, 'error');
+    updateClientState();
+  }
 });
 
 // ── Download Progress ───────────────────────────
 
 listen('client-progress', (event) => {
     const p = event.payload;
+    isDownloading = p.phase !== 'complete';
+
+    if (p.phase === 'complete') {
+      paused = false;
+      updateClientState();
+      return;
+    }
+
     el.stateNotInstalled.classList.add('hidden');
     el.stateReady.classList.add('hidden');
     el.stateDownloading.classList.remove('hidden');
@@ -188,14 +252,19 @@ listen('client-progress', (event) => {
     el.progressStatus.textContent = p.message;
     el.progressDetail.textContent = p.speed || '';
 
-    if (p.phase === 'syncing' || p.phase === 'downloading') {
-      el.progressPhase.textContent = pct + '% Complete';
+    // Show pause button only during syncing (not scanning/connecting)
+    const pauseBtn = $('#btn-pause');
+    const showPause = p.phase === 'syncing' || p.phase === 'paused';
+    if (pauseBtn) pauseBtn.style.display = showPause ? '' : 'none';
+
+    if (p.phase === 'connecting') {
+      paused = false;
+      if (pauseBtn) pauseBtn.textContent = 'Pause';
+      el.progressPhase.textContent = 'Starting...';
+    } else if (p.phase === 'paused') {
+      el.progressPhase.textContent = 'Paused';
     } else {
       el.progressPhase.textContent = p.message;
-    }
-
-    if (p.phase === 'complete') {
-      setTimeout(() => updateClientState(), 1000);
     }
   });
 

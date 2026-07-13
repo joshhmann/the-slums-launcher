@@ -13,6 +13,10 @@
         <span class="logo-icon">⚔</span>
         <h1 id="app-name">The Slums</h1>
       </div>
+      <div class="server-badge" id="server-badge">
+        <span class="server-dot"></span>
+        <span id="header-server">wow.asslorde.com</span>
+      </div>
       <nav>
         <button class="tab-btn active" data-tab="game">Game</button>
         <button class="tab-btn" data-tab="addons">Addons</button>
@@ -29,19 +33,7 @@
             <div class="hero-icon">⚔</div>
             <h2 id="tagline">AzerothCore WotLK 3.3.5a</h2>
             <p class="hero-note">First-time download: ~8 GB</p>
-            <button class="btn-primary" id="btn-install">Install The Slums</button>
-          </div>
-        </div>
-
-        <!-- STATE: Downloading / Updating -->
-        <div id="state-downloading" class="state-view hidden">
-          <div class="progress-card">
-            <h3 id="dl-phase">Preparing...</h3>
-            <div class="progress-bar">
-              <div class="progress-fill" id="dl-fill"></div>
-            </div>
-            <p id="dl-status"></p>
-            <p id="dl-detail" class="text-dim"></p>
+            <button class="btn-primary" id="btn-install">Install Game</button>
           </div>
         </div>
 
@@ -49,14 +41,19 @@
         <div id="state-ready" class="state-view hidden">
           <div class="hero-play">
             <button class="btn-primary btn-play" id="btn-play">▶ PLAY</button>
-            <p class="play-footnote" id="play-server">wow.asslorde.com</p>
-            <button class="btn-link" id="btn-check-update">Check for Updates</button>
+            <div class="play-server-info">
+              <span class="server-dot"></span>
+              <span id="play-server">wow.asslorde.com</span>
+              <span class="play-realm-type">WotLK 3.3.5a — PvP</span>
+            </div>
+            <button class="btn-link" id="btn-check-update">Update Game</button>
           </div>
           <div class="stats-card">
             <div class="stat-row"><span class="stat-label">Client Size</span><span class="stat-value" id="stat-size">—</span></div>
             <div class="stat-row"><span class="stat-label">Server</span><span class="stat-value" id="stat-server">—</span></div>
             <div class="stat-row"><span class="stat-label">Addons</span><span class="stat-value" id="stat-addons">—</span></div>
             <button class="btn-danger btn-sm" id="btn-clear-cache">Clear Cache</button>
+            <button class="btn-link btn-sm" id="btn-repair">Repair Files</button>
           </div>
         </div>
       </div>
@@ -92,6 +89,21 @@
           <button id="page-prev">← Prev</button>
           <span id="page-info">Page 1</span>
           <button id="page-next">Next →</button>
+        </div>
+      </div>
+
+      <!-- Download progress — always visible across tabs -->
+      <div id="state-downloading" class="state-view hidden overlay-progress">
+        <div class="progress-card">
+          <h3 id="dl-phase">Starting...</h3>
+          <div class="progress-bar">
+            <div class="progress-fill" id="dl-fill"></div>
+          </div>
+          <p id="dl-status"></p>
+          <p id="dl-detail" class="text-dim"></p>
+          <div class="progress-actions" id="progress-actions">
+            <button class="btn-pause" id="btn-pause">Pause</button>
+          </div>
         </div>
       </div>
     </main>
