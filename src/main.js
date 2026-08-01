@@ -19,15 +19,15 @@ const el = {
   appName: $('#app-name'),
   tagline: $('#tagline'),
   stateNotInstalled: $('#state-not-installed'),
-  stateDownloading: $('#state-downloading'),
   stateReady: $('#state-ready'),
-  progressPhase: $('#dl-phase'),
-  progressFill: $('#dl-fill'),
-  progressStatus: $('#dl-status'),
-  progressDetail: $('#dl-detail'),
+  dlBar: $('#dl-bar'),
+  dlBarFill: $('#dl-bar-fill'),
+  dlBarStatus: $('#dl-bar-status'),
+  dlBarDetail: $('#dl-bar-detail'),
   statSize: $('#stat-size'),
   statServer: $('#stat-server'),
   statAddons: $('#stat-addons'),
+  statPath: $('#stat-path'),
   playServer: $('#play-server'),
   addonGrid: $('#addon-grid'),
   addonPager: $('#addon-pager'),
@@ -73,6 +73,9 @@ async function init() {
 // ── Client State Machine ────────────────────────
 
 async function updateClientState() {
+  // Don't swap views mid-download: WoW.exe exists on disk early in the sync,
+  // so get_client_status would report "ready" while the client is incomplete.
+  if (isDownloading) return;
   try {
     clientStatus = await invoke('get_client_status');
   } catch (e) {
@@ -81,18 +84,21 @@ async function updateClientState() {
 
   el.stateNotInstalled.classList.add('hidden');
   el.stateReady.classList.add('hidden');
-  // don't hide downloading state if a download is active
-  if (!isDownloading) el.stateDownloading.classList.add('hidden');
 
   const s = clientStatus;
   if (!s || s.phase === 'not_installed') {
     el.stateNotInstalled.classList.remove('hidden');
-  } else if (s.phase === 'needs_update') {
-    el.stateReady.classList.remove('hidden');
-    showReadyState();
   } else {
     el.stateReady.classList.remove('hidden');
     showReadyState();
+    const updateBtn = $('#btn-check-update');
+    if (s.phase === 'needs_update') {
+      updateBtn.textContent = 'Update Available!';
+      updateBtn.classList.add('update-flag');
+    } else {
+      updateBtn.textContent = 'Update Game';
+      updateBtn.classList.remove('update-flag');
+    }
   }
 }
 
@@ -100,6 +106,7 @@ function showReadyState() {
   const size = clientStatus?.installed_size || 0;
   el.statSize.textContent = size > 0 ? formatSize(size) : '—';
   el.statAddons.textContent = installedAddons.length > 0 ? `${installedAddons.length} installed` : '—';
+  el.statPath.textContent = clientStatus?.client_path || '—';
   $('#btn-check-update').classList.remove('hidden');
 }
 
@@ -112,44 +119,40 @@ function formatSize(bytes) {
 // ── Install Button ──────────────────────────────
 
 $('#btn-install')?.addEventListener('click', async () => {
+  if (isDownloading) return;
   isDownloading = true;
-  el.stateNotInstalled.classList.add('hidden');
-  el.stateDownloading.classList.remove('hidden');
-  el.progressPhase.textContent = 'Starting...';
-  el.progressFill.style.width = '0%';
-  el.progressStatus.textContent = '';
-  el.progressDetail.textContent = '';
-
+  showDlBar('Installing...', 0);
   try {
     const path = await invoke('download_client');
     isDownloading = false;
+    hideDlBar();
     showToast('Game installed!', 'success');
     updateClientState();
   } catch (e) {
     isDownloading = false;
+    hideDlBar();
     showToast('Download failed: ' + e, 'error');
-    el.stateDownloading.classList.add('hidden');
-    el.stateNotInstalled.classList.remove('hidden');
+    if (clientStatus?.phase === 'not_installed') {
+      el.stateNotInstalled.classList.remove('hidden');
+    }
   }
 });
 
 // ── Check for Updates ───────────────────────────
 
 $('#btn-check-update')?.addEventListener('click', async () => {
+  if (isDownloading) return;
   isDownloading = true;
-  el.stateReady.classList.add('hidden');
-  el.stateDownloading.classList.remove('hidden');
-  el.progressPhase.textContent = 'Updating...';
-  el.progressFill.style.width = '0%';
-  el.progressStatus.textContent = '';
-
+  showDlBar('Checking for updates...', 0);
   try {
     const path = await invoke('download_client');
     isDownloading = false;
+    hideDlBar();
     showToast('Game is up to date!', 'success');
     updateClientState();
   } catch (e) {
     isDownloading = false;
+    hideDlBar();
     showToast('Update failed: ' + e, 'error');
     updateClientState();
   }
@@ -158,11 +161,27 @@ $('#btn-check-update')?.addEventListener('click', async () => {
 // ── Play Button ─────────────────────────────────
 
 $('#btn-play')?.addEventListener('click', async () => {
+  if (isDownloading) return;
   try {
     await invoke('launch_game');
     showToast('Game launched!', 'success');
   } catch (e) {
     showToast('Failed: ' + e, 'error');
+  }
+});
+
+// ── Client Path ─────────────────────────────────
+
+$('#btn-change-path')?.addEventListener('click', async () => {
+  try {
+    const path = await invoke('select_game_path');
+    if (path) {
+      await invoke('save_settings', { gamePath: path });
+      showToast('Game path updated', 'success');
+      updateClientState();
+    }
+  } catch (e) {
+    showToast('Failed to set game path: ' + e, 'error');
   }
 });
 
@@ -260,6 +279,7 @@ $('#btn-register')?.addEventListener('click', async () => {
 // ── Pause / Resume ──────────────────────────────
 
 let paused = false;
+let addonBusy = false;
 $('#btn-pause')?.addEventListener('click', async () => {
   if (paused) {
     await invoke('resume_download');
@@ -277,21 +297,18 @@ $('#btn-pause')?.addEventListener('click', async () => {
 // ── Repair ──────────────────────────────────────
 
 $('#btn-repair')?.addEventListener('click', async () => {
+  if (isDownloading) return;
   isDownloading = true;
-  el.stateReady.classList.add('hidden');
-  el.stateDownloading.classList.remove('hidden');
-  el.progressPhase.textContent = 'Repairing...';
-  el.progressFill.style.width = '0%';
-  el.progressStatus.textContent = '';
-  el.progressDetail.textContent = '';
-
+  showDlBar('Repairing...', 0);
   try {
     const path = await invoke('repair_game');
     isDownloading = false;
+    hideDlBar();
     showToast('Repair complete!', 'success');
     updateClientState();
   } catch (e) {
     isDownloading = false;
+    hideDlBar();
     showToast('Repair failed: ' + e, 'error');
     updateClientState();
   }
@@ -299,24 +316,34 @@ $('#btn-repair')?.addEventListener('click', async () => {
 
 // ── Download Progress ───────────────────────────
 
+function showDlBar(message, pct) {
+  el.dlBar.classList.remove('hidden');
+  el.dlBarFill.style.width = Math.min(pct, 100) + '%';
+  el.dlBarStatus.textContent = message;
+}
+
+function hideDlBar() {
+  el.dlBar.classList.add('hidden');
+  el.dlBarFill.style.width = '0%';
+  el.dlBarStatus.textContent = '';
+  el.dlBarDetail.textContent = '';
+}
+
 listen('client-progress', (event) => {
     const p = event.payload;
     isDownloading = p.phase !== 'complete';
 
     if (p.phase === 'complete') {
       paused = false;
+      hideDlBar();
       updateClientState();
       return;
     }
 
-    el.stateNotInstalled.classList.add('hidden');
-    el.stateReady.classList.add('hidden');
-    el.stateDownloading.classList.remove('hidden');
-
     const pct = p.total > 0 ? Math.round((p.downloaded / p.total) * 100) : 0;
-    el.progressFill.style.width = pct + '%';
-    el.progressStatus.textContent = p.message;
-    el.progressDetail.textContent = p.speed || '';
+    el.dlBarFill.style.width = pct + '%';
+    el.dlBarStatus.textContent = p.message;
+    el.dlBarDetail.textContent = p.speed || '';
 
     // Show pause button only during syncing (not scanning/connecting)
     const pauseBtn = $('#btn-pause');
@@ -326,11 +353,11 @@ listen('client-progress', (event) => {
     if (p.phase === 'connecting') {
       paused = false;
       if (pauseBtn) pauseBtn.textContent = 'Pause';
-      el.progressPhase.textContent = 'Starting...';
+      el.dlBarStatus.textContent = 'Starting...';
     } else if (p.phase === 'paused') {
-      el.progressPhase.textContent = 'Paused';
-    } else {
-      el.progressPhase.textContent = p.message;
+      el.dlBarStatus.textContent = 'Paused';
+    } else if (p.phase === 'scanning' || p.phase === 'syncing') {
+      el.dlBarStatus.textContent = p.message;
     }
   });
 
@@ -390,11 +417,7 @@ function renderBrowse() {
     return t.includes(query) || d.includes(query) || u.includes(query);
   });
 
-  if (sort === 'popular') {
-    filtered.sort((a, b) => (b.downloadCount || 0) - (a.downloadCount || 0));
-  } else if (sort === 'newest') {
-    filtered.sort((a, b) => (b.uploadDate || '').localeCompare(a.uploadDate || ''));
-  } else if (sort === 'az') {
+  if (sort === 'az') {
     filtered.sort((a, b) => (a.title || '').localeCompare(b.title || ''));
   } else if (sort === 'za') {
     filtered.sort((a, b) => (b.title || '').localeCompare(a.title || ''));
@@ -431,7 +454,7 @@ function cardHtml(addon, isBrowse, isInstalled) {
   return `
     <div class="addon-card" data-addon='${escAttr(JSON.stringify(addon))}'>
       <div class="addon-card-header">
-        <div class="addon-thumb">${img ? `<img src="${escHtml(img)}" onerror="this.style.display='none';this.parentElement.textContent='${initial}'"/>` : initial}</div>
+        <div class="addon-thumb">${img ? `<img src="${escHtml(img)}" data-fallback="${escAttr(initial)}"/>` : initial}</div>
         <div class="addon-info">
           <div class="addon-title">${escHtml(name)}</div>
           <div class="addon-author">${escHtml(author)}</div>
@@ -498,7 +521,9 @@ function createFolderName(name) {
 }
 
 async function doInstall(addon) {
+  if (addonBusy) return;
   const name = addon.title || addon.name || 'Unknown';
+  addonBusy = true;
   showToast('Installing ' + name + '...', 'info');
   try {
     await invoke('install_addon', { addon, expansion: el.addonExpansion.value });
@@ -509,12 +534,18 @@ async function doInstall(addon) {
     showToast('Installed!', 'success');
   } catch (e) {
     showToast('Failed: ' + e, 'error');
+  } finally {
+    addonBusy = false;
   }
 }
 
 async function doRemove(addon) {
+  if (addonBusy) return;
   const name = addon.title || addon.name || 'Unknown';
-  const folderName = createFolderName(name);
+  // InstalledAddon.name is the actual on-disk folder. Sanitizing the TOC title
+  // breaks removal when folder name != title (e.g. "DBM-Core" vs "Deadly Boss Mods").
+  const folderName = addon.name || createFolderName(name);
+  addonBusy = true;
   showToast('Removing ' + name + '...', 'info');
   try {
     await invoke('delete_addon', { name: folderName });
@@ -525,6 +556,8 @@ async function doRemove(addon) {
     showToast('Removed!', 'success');
   } catch (e) {
     showToast('Failed: ' + e, 'error');
+  } finally {
+    addonBusy = false;
   }
 }
 
@@ -538,7 +571,7 @@ function openModal(addon) {
 
   el.modalImage.innerHTML = '';
   if (addon.image) {
-    el.modalImage.innerHTML = `<img src="${escHtml(addon.image)}" onerror="this.style.display='none';this.parentElement.innerHTML='<div class=modal-image-placeholder>${name.charAt(0).toUpperCase()}</div>'"/>`;
+    el.modalImage.innerHTML = `<img src="${escHtml(addon.image)}" data-fallback="${escAttr(name.charAt(0).toUpperCase())}"/>`;
   } else {
     el.modalImage.innerHTML = `<div class="modal-image-placeholder">${name.charAt(0).toUpperCase()}</div>`;
   }
@@ -577,6 +610,29 @@ $('.modal-close')?.addEventListener('click', closeModal);
 el.modal?.addEventListener('click', (e) => {
   if (e.target === el.modal) closeModal();
 });
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') closeModal();
+});
+
+// Image load failures: delegated handler — no inline onerror, so addon-controlled
+// titles can never inject into handler code. `error` doesn't bubble, hence capture.
+document.addEventListener('error', (e) => {
+  const img = e.target;
+  if (img.tagName !== 'IMG' || img.dataset.fallback === undefined) return;
+  const fallback = img.dataset.fallback || '';
+  const parent = img.parentElement;
+  if (!parent) return;
+  if (parent.classList.contains('modal-image')) {
+    parent.innerHTML = '';
+    const holder = document.createElement('div');
+    holder.className = 'modal-image-placeholder';
+    holder.textContent = fallback;
+    parent.appendChild(holder);
+  } else {
+    img.remove();
+    parent.textContent = fallback;
+  }
+}, true);
 
 // ── Addon Sub-tabs ──────────────────────────────
 
@@ -634,7 +690,7 @@ function escHtml(str) {
 }
 
 function escAttr(str) {
-  return (str || '').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  return (str || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
 // ── Start ───────────────────────────────────────

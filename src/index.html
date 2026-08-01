@@ -54,6 +54,11 @@
             <div class="stat-row"><span class="stat-label">Client Size</span><span class="stat-value" id="stat-size">—</span></div>
             <div class="stat-row"><span class="stat-label">Server</span><span class="stat-value" id="stat-server">—</span></div>
             <div class="stat-row"><span class="stat-label">Addons</span><span class="stat-value" id="stat-addons">—</span></div>
+            <div class="stat-row stat-path" id="stat-path-row">
+              <span class="stat-label">Client Location</span>
+              <span class="stat-value stat-path-value" id="stat-path">—</span>
+              <button class="btn-sm btn-link" id="btn-change-path">Change</button>
+            </div>
             <button class="btn-danger btn-sm" id="btn-clear-cache">Clear Cache</button>
             <button class="btn-link btn-sm" id="btn-repair">Repair Files</button>
           </div>
@@ -72,8 +77,6 @@
               <input type="text" id="addon-search" placeholder="Search addons..." />
             </div>
             <select id="addon-sort">
-              <option value="popular">Most Popular</option>
-              <option value="newest">Recently Added</option>
               <option value="az">Name A-Z</option>
               <option value="za">Name Z-A</option>
             </select>
@@ -94,21 +97,19 @@
         </div>
       </div>
 
-      <!-- Download progress — always visible across tabs -->
-      <div id="state-downloading" class="state-view hidden overlay-progress">
-        <div class="progress-card">
-          <h3 id="dl-phase">Starting...</h3>
-          <div class="progress-bar">
-            <div class="progress-fill" id="dl-fill"></div>
-          </div>
-          <p id="dl-status"></p>
-          <p id="dl-detail" class="text-dim"></p>
-          <div class="progress-actions" id="progress-actions">
-            <button class="btn-pause" id="btn-pause">Pause</button>
-          </div>
-        </div>
-      </div>
     </main>
+
+    <!-- Download progress bar — fixed at bottom, never covers content -->
+    <div id="dl-bar" class="dl-bar hidden">
+      <div class="dl-bar-progress">
+        <div class="dl-bar-fill" id="dl-bar-fill"></div>
+      </div>
+      <div class="dl-bar-info">
+        <span class="dl-bar-status" id="dl-bar-status">Starting...</span>
+        <span class="dl-bar-detail" id="dl-bar-detail"></span>
+        <button class="btn-pause btn-pause-bar" id="btn-pause">Pause</button>
+      </div>
+    </div>
 
     <!-- Detail Modal -->
     <div id="modal" class="modal-overlay hidden">
