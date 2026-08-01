@@ -201,6 +201,13 @@ fn compute_sha256(path: &PathBuf) -> Result<String, String> {
     Ok(hex::encode(hasher.finalize()))
 }
 
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    hex::encode(hasher.finalize())
+}
+
 fn clients_dir(app: &tauri::AppHandle) -> PathBuf {
     let exe_dir = app.path()
         .executable_dir()
@@ -251,7 +258,19 @@ async fn download_file(client: &reqwest::Client, url: &str, label: &str) -> Resu
 
 fn is_soft_path(path: &str) -> bool {
     let p = path.replace('\\', "/").to_lowercase();
-    p.starts_with("interface/addons/") || p.starts_with("fonts/")
+    // Addons, fonts, and user-modifiable files must never be overwritten or
+    // trigger a re-sync. WTF/ holds per-user UI settings, Config.wtf and
+    // realmlist.wtf are user-edited, cache/logs/screenshots churn constantly.
+    p.starts_with("interface/addons/")
+        || p.starts_with("fonts/")
+        || p.starts_with("wtf/")
+        || p.starts_with("cache/")
+        || p.starts_with("logs/")
+        || p.starts_with("screenshots/")
+        || p == "config.wtf"
+        || p == "realmlist.wtf"
+        || p == "errors.txt"
+        || p.ends_with(".log")
 }
 
 fn client_needs_sync(dir: &PathBuf, manifest: &ClientManifest) -> bool {
@@ -260,8 +279,14 @@ fn client_needs_sync(dir: &PathBuf, manifest: &ClientManifest) -> bool {
         let local = dir.join(&file.path);
         if local.is_dir() { continue; }
         if !local.exists() { return true; }
+        // Size first (cheap), then hash (expensive but catches corruption).
         if let Some(expected) = file.size {
             if std::fs::metadata(&local).map(|m| m.len()).unwrap_or(0) != expected {
+                return true;
+            }
+        }
+        if !file.sha256.is_empty() {
+            if compute_sha256(&local).map_or(true, |h| h != file.sha256) {
                 return true;
             }
         }
@@ -727,6 +752,27 @@ async fn download_client(
         }
 
         let bytes = download_file(&client, &file_url, &file.path).await?;
+
+        // Verify downloaded file against manifest before accepting it.
+        // Truncated/bad transfers are re-requested (up to 3 attempts inside
+        // download_file), so a mismatch here means the file is genuinely broken.
+        if let Some(expected_size) = file.size {
+            if bytes.len() as u64 != expected_size {
+                return Err(format!(
+                    "Size mismatch for {}: got {} bytes, expected {}",
+                    file.path, bytes.len(), expected_size
+                ));
+            }
+        }
+        if !file.sha256.is_empty() {
+            let actual_sha = sha256_hex(&bytes);
+            if actual_sha != file.sha256 {
+                return Err(format!(
+                    "Hash mismatch for {}: got {}, expected {}",
+                    file.path, actual_sha, file.sha256
+                ));
+            }
+        }
         cumulative_bytes += bytes.len() as u64;
 
         // Atomic write: temp file then rename to prevent partial files on crash
