@@ -17,6 +17,8 @@ struct Config {
     #[serde(default)]
     game_path: Option<String>,
     #[serde(default)]
+    client_version: Option<String>,
+    #[serde(default)]
     manifest_url: String,
     #[serde(default)]
     addons_url: String,
@@ -57,14 +59,14 @@ struct InstalledAddon {
     version: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct ClientManifest {
     version: Option<String>,
     base_url: Option<String>,
     files: Vec<ManifestFile>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct ManifestFile {
     path: String,
     #[serde(alias = "hash")]
@@ -76,9 +78,8 @@ struct ManifestFile {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct ClientStatus {
     phase: String,
-    manifest_total: u64,
-    files_to_sync: u64,
     installed_size: u64,
+    client_path: String,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -117,13 +118,13 @@ fn load_config(path: &PathBuf, default: &Config) -> Config {
     default.clone()
 }
 
-fn save_config(path: &PathBuf, config: &Config) {
+fn save_config(path: &PathBuf, config: &Config) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+        std::fs::create_dir_all(parent)?;
     }
-    if let Ok(content) = serde_json::to_string_pretty(config) {
-        let _ = std::fs::write(path, content);
-    }
+    let content = serde_json::to_string_pretty(config)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+    std::fs::write(path, content)
 }
 
 fn game_dir(config: &Config) -> Option<PathBuf> {
@@ -147,15 +148,23 @@ fn find_wow_exe(dir: &PathBuf) -> Option<PathBuf> {
     if patcher.exists() { return Some(patcher); }
 
     let entries = std::fs::read_dir(dir).ok()?;
+    let mut subdirs = Vec::new();
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().to_lowercase();
         if name == "wowclassic.exe" || name == "world of warcraft.exe" {
             return Some(entry.path());
         }
+        let path = entry.path();
+        if path.extension().map(|e| e == "exe").unwrap_or(false) {
+            return Some(path);
+        }
         if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-            if let Some(found) = find_wow_exe(&entry.path()) {
-                return Some(found);
-            }
+            subdirs.push(path);
+        }
+    }
+    for subdir in subdirs {
+        if let Some(found) = find_wow_exe(&subdir) {
+            return Some(found);
         }
     }
     None
@@ -171,12 +180,18 @@ fn realmlist_paths(game_dir: &PathBuf) -> Vec<PathBuf> {
 
 fn ensure_realmlist(game_dir: &PathBuf, server_addr: &str) {
     let content = format!("set realmlist {}\n", server_addr);
+    let mut wrote = false;
     for p in &realmlist_paths(game_dir) {
-        if p.exists() { return; }
+        if p.exists() {
+            let _ = std::fs::write(p, &content);
+            wrote = true;
+        }
     }
-    let fallback = game_dir.join("Data").join("enUS");
-    let _ = std::fs::create_dir_all(&fallback);
-    let _ = std::fs::write(fallback.join("realmlist.wtf"), &content);
+    if !wrote {
+        let fallback = game_dir.join("Data").join("enUS");
+        let _ = std::fs::create_dir_all(&fallback);
+        let _ = std::fs::write(fallback.join("realmlist.wtf"), &content);
+    }
 }
 
 fn compute_sha256(path: &PathBuf) -> Result<String, String> {
@@ -187,7 +202,74 @@ fn compute_sha256(path: &PathBuf) -> Result<String, String> {
 }
 
 fn clients_dir(app: &tauri::AppHandle) -> PathBuf {
-    config_dir(app).join("clients")
+    app.path()
+        .executable_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join("client")
+}
+
+fn http_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(15))
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))
+}
+
+async fn download_file(client: &reqwest::Client, url: &str, label: &str) -> Result<Vec<u8>, String> {
+    let mut last_err = String::new();
+    for attempt in 1..=3 {
+        if attempt > 1 {
+            tokio::time::sleep(Duration::from_millis(400 * attempt as u64)).await;
+        }
+        match tokio::time::timeout(Duration::from_secs(600), async {
+            let response = client.get(url).send().await
+                .map_err(|e| format!("Failed: {} - {}", label, e))?;
+            if !response.status().is_success() {
+                return Err(format!("HTTP {} for: {}", response.status(), label));
+            }
+            response.bytes().await.map_err(|e| format!("Download error: {}", e))
+        }).await {
+            Ok(Ok(bytes)) => return Ok(bytes.to_vec()),
+            Ok(Err(e)) => last_err = e,
+            Err(_) => last_err = format!("Timed out downloading: {}", label),
+        }
+    }
+    Err(last_err)
+}
+
+fn is_soft_path(path: &str) -> bool {
+    let p = path.replace('\\', "/").to_lowercase();
+    p.starts_with("interface/addons/") || p.starts_with("fonts/")
+}
+
+fn client_needs_sync(dir: &PathBuf, manifest: &ClientManifest) -> bool {
+    for file in &manifest.files {
+        if is_soft_path(&file.path) { continue; }
+        let local = dir.join(&file.path);
+        if local.is_dir() { continue; }
+        if !local.exists() { return true; }
+        if let Some(expected) = file.size {
+            if std::fs::metadata(&local).map(|m| m.len()).unwrap_or(0) != expected {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn cleanup_tmp_files(dir: &PathBuf) {
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if let Ok(ft) = entry.file_type() {
+                if ft.is_dir() {
+                    cleanup_tmp_files(&path);
+                } else if path.extension().map(|e| e == "tmp").unwrap_or(false) {
+                    let _ = std::fs::remove_file(&path);
+                }
+            }
+        }
+    }
 }
 
 fn emit<E: serde::Serialize + Clone>(app: &tauri::AppHandle, event: &str, payload: E) -> Result<(), String> {
@@ -217,15 +299,15 @@ fn installed_size(dir: &PathBuf) -> u64 {
 
 #[tauri::command]
 fn get_config(state: State<AppState>) -> Config {
-    state.config.lock().unwrap().clone()
+    state.config.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
 #[tauri::command]
-fn save_settings(state: State<AppState>, game_path: Option<String>) {
+fn save_settings(state: State<AppState>, game_path: Option<String>) -> Result<(), String> {
     let path = state.config_path.clone();
-    let mut config = state.config.lock().unwrap();
+    let mut config = state.config.lock().unwrap_or_else(|e| e.into_inner());
     config.game_path = game_path;
-    save_config(&path, &config);
+    save_config(&path, &config).map_err(|e| format!("Failed to save settings: {}", e))
 }
 
 #[tauri::command]
@@ -233,62 +315,82 @@ async fn get_client_status(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<ClientStatus, String> {
-    let config = state.config.lock().unwrap().clone();
-    let dir = clients_dir(&app);
+    let config = state.config.lock().unwrap_or_else(|e| e.into_inner()).clone();
 
-    let manifest: ClientManifest = reqwest::get(&config.manifest_url)
-        .await
-        .map_err(|e| format!("Failed to fetch manifest: {}", e))?
-        .json()
-        .await
-        .map_err(|e| format!("Invalid manifest: {}", e))?;
+    let dir = game_dir(&config).or_else(|| {
+        let d = clients_dir(&app);
+        if d.exists() { Some(d) } else { None }
+    });
 
-    let total = manifest.files.len() as u64;
-    let mut missing = 0u64;
+    match dir {
+        Some(d) if find_wow_exe(&d).is_some() => {
+            let path_str = d.to_string_lossy().to_string();
 
-    for file in &manifest.files {
-        let local = dir.join(&file.path);
-        if !local.exists() {
-            missing += 1;
-        } else {
-            match compute_sha256(&local) {
-                Ok(h) if h != file.sha256 => missing += 1,
-                _ => {}
-            }
+            // Best-effort manifest check: unreachable server must not block play —
+            // offline falls back to "ready" (client is usable as-is).
+            let manifest = match http_client() {
+                Ok(client) => {
+                    match tokio::time::timeout(
+                        Duration::from_secs(10),
+                        client.get(&config.manifest_url).send(),
+                    ).await {
+                        Ok(Ok(resp)) => resp.json::<ClientManifest>().await.ok(),
+                        _ => None,
+                    }
+                }
+                Err(_) => None,
+            };
+
+            let scan_dir = d.clone();
+            let scan_manifest = manifest.clone();
+            let (size, needs_sync) = tokio::task::spawn_blocking(move || {
+                let size = installed_size(&scan_dir);
+                let bad = scan_manifest.as_ref()
+                    .map(|m| client_needs_sync(&scan_dir, m))
+                    .unwrap_or(false);
+                (size, bad)
+            }).await
+                .map_err(|e| format!("Scan failed: {}", e))?;
+
+            let version_ok = manifest.as_ref()
+                .map_or(true, |m| config.client_version.as_deref() == m.version.as_deref());
+            let phase = if !version_ok || needs_sync { "needs_update" } else { "ready" };
+
+            Ok(ClientStatus {
+                phase: phase.into(),
+                installed_size: size,
+                client_path: path_str,
+            })
         }
+        _ => Ok(ClientStatus {
+            phase: "not_installed".into(),
+            installed_size: 0,
+            client_path: clients_dir(&app).to_string_lossy().to_string(),
+        })
     }
-
-    let isize = installed_size(&dir);
-    let phase = if !dir.exists() || missing == total || find_wow_exe(&dir).is_none() {
-        "not_installed"
-    } else if missing > 0 {
-        "needs_update"
-    } else {
-        "ready"
-    };
-
-    Ok(ClientStatus {
-        phase: phase.into(),
-        manifest_total: total,
-        files_to_sync: missing,
-        installed_size: isize,
-    })
 }
 
 #[tauri::command]
-fn launch_game(state: State<AppState>) -> Result<(), String> {
-    let config = state.config.lock().unwrap();
-    let dir = game_dir(&config).ok_or("Game client not installed. Click Install to download it.")?;
+fn launch_game(app: tauri::AppHandle, state: State<AppState>) -> Result<(), String> {
+    let config = state.config.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = game_dir(&config)
+        .or_else(|| {
+            let d = clients_dir(&app);
+            if d.exists() { Some(d) } else { None }
+        })
+        .ok_or("Game client not installed. Click Install to download it.")?;
     let exe = find_wow_exe(&dir).ok_or("Could not find WoW executable")?;
     ensure_realmlist(&dir, &config.server_address);
 
     let child = if cfg!(target_os = "linux") {
         Command::new("wine").arg(&exe)
+            .current_dir(&dir)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
     } else {
         Command::new(&exe)
+            .current_dir(&dir)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
@@ -296,13 +398,13 @@ fn launch_game(state: State<AppState>) -> Result<(), String> {
 
     match child {
         Ok(_) => Ok(()),
-        Err(e) => Err(format!("Failed to launch: {}", e)),
+        Err(e) => Err(format!("Failed to launch {}: {}", exe.display(), e)),
     }
 }
 
 #[tauri::command]
 fn clear_cache(state: State<AppState>) -> Result<(), String> {
-    let config = state.config.lock().unwrap();
+    let config = state.config.lock().unwrap_or_else(|e| e.into_inner());
     let dir = game_dir(&config).ok_or("Game client not installed")?;
 
     for d in [dir.join("WDB"), dir.join("Cache")] {
@@ -313,7 +415,7 @@ fn clear_cache(state: State<AppState>) -> Result<(), String> {
 
 #[tauri::command]
 fn list_installed_addons(state: State<AppState>) -> Vec<InstalledAddon> {
-    let config = state.config.lock().unwrap();
+    let config = state.config.lock().unwrap_or_else(|e| e.into_inner());
     let dir = match game_dir(&config) {
         Some(d) => d,
         None => return vec![],
@@ -364,10 +466,13 @@ fn list_installed_addons(state: State<AppState>) -> Vec<InstalledAddon> {
 
 #[tauri::command]
 async fn fetch_addon_list(state: State<'_, AppState>) -> Result<Vec<AddonEntry>, String> {
-    let config = state.config.lock().unwrap().clone();
+    let config = state.config.lock().unwrap_or_else(|e| e.into_inner()).clone();
     if config.addons_url.is_empty() { return Ok(vec![]); }
 
-    let resp = reqwest::get(&config.addons_url).await
+    let client = http_client()?;
+    let resp = tokio::time::timeout(Duration::from_secs(30), client.get(&config.addons_url).send())
+        .await
+        .map_err(|_| "Timed out fetching addon list".to_string())?
         .map_err(|e| format!("Failed to fetch addon list: {}", e))?;
     let text = resp.text().await
         .map_err(|e| format!("Failed to read response: {}", e))?;
@@ -417,7 +522,7 @@ async fn install_addon(
     };
 
     let (addons_dir, temp_dir) = {
-        let config = state.config.lock().unwrap();
+        let config = state.config.lock().unwrap_or_else(|e| e.into_inner());
         let dir = game_dir(&config).ok_or("Game client not installed")?;
         let a_dir = dir.join("Interface").join("AddOns");
         std::fs::create_dir_all(&a_dir).map_err(|e| e.to_string())?;
@@ -427,8 +532,8 @@ async fn install_addon(
     };
 
     let zip_path = temp_dir.join(format!("addon_{}.zip", rand_id()));
-    let response = reqwest::get(&download_url).await.map_err(|e| format!("Download failed: {}", e))?;
-    let bytes = response.bytes().await.map_err(|e| format!("Download failed: {}", e))?;
+    let client = http_client()?;
+    let bytes = download_file(&client, &download_url, "addon download").await?;
 
     let mut file = std::fs::File::create(&zip_path).map_err(|e| e.to_string())?;
     file.write_all(&bytes).map_err(|e| e.to_string())?;
@@ -462,7 +567,7 @@ fn rand_id() -> String {
 
 #[tauri::command]
 fn delete_addon(state: State<AppState>, name: String) -> Result<(), String> {
-    let config = state.config.lock().unwrap();
+    let config = state.config.lock().unwrap_or_else(|e| e.into_inner());
     let dir = game_dir(&config).ok_or("Game client not installed")?;
     let addon_path = dir.join("Interface").join("AddOns").join(&name);
     if addon_path.exists() {
@@ -486,19 +591,27 @@ async fn download_client(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
-    let config = state.config.lock().unwrap().clone();
-    let dir = clients_dir(&app);
+    let config = state.config.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let dir = game_dir(&config).unwrap_or_else(|| clients_dir(&app));
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    cleanup_tmp_files(&dir);
 
     emit(&app, "client-progress", ClientSyncProgress {
         downloaded: 0, total: 0, speed: "".into(),
         phase: "connecting".into(), message: "Fetching manifest...".into(),
     })?;
 
-    let manifest: ClientManifest = reqwest::get(&config.manifest_url).await
-        .map_err(|e| format!("Failed to fetch manifest: {}", e))?
-        .json().await
-        .map_err(|e| format!("Invalid manifest: {}", e))?;
+    let client = http_client()?;
+    let resp = tokio::time::timeout(Duration::from_secs(30), client.get(&config.manifest_url).send())
+        .await
+        .map_err(|_| "Timed out fetching manifest".to_string())?
+        .map_err(|e| format!("Failed to fetch manifest: {}", e))?;
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(format!("Server returned {} for manifest", status));
+    }
+    let manifest: ClientManifest = resp.json().await
+        .map_err(|e| format!("Invalid manifest (HTTP {}): {}", status, e))?;
 
     let total = manifest.files.len() as u64;
     let base_url = manifest.base_url.unwrap_or_default();
@@ -510,39 +623,60 @@ async fn download_client(
     })?;
 
     let mut to_download: Vec<&ManifestFile> = Vec::new();
-    let mut scanned: u64 = 0;
+    let mut needs_hash: Vec<(usize, PathBuf)> = Vec::new();
 
-    for file in &manifest.files {
+    for (i, file) in manifest.files.iter().enumerate() {
         let local = dir.join(&file.path);
-        if local.is_dir() {
-            scanned += 1;
+        if local.is_dir() { continue; }
+        if !local.exists() {
+            to_download.push(file);
             continue;
         }
-        let needs = if local.exists() {
-            compute_sha256(&local).map_or(true, |h| h != file.sha256)
-        } else { true };
-        if needs { to_download.push(file); }
-        scanned += 1;
-        if scanned % 50 == 0 || scanned == total {
-            // cap at total-1 so progress never hits 100% before syncing starts
-            let display = if scanned == total { total - 1 } else { scanned };
-            emit(&app, "client-progress", ClientSyncProgress {
-                downloaded: display, total, speed: "".into(),
-                phase: "scanning".into(),
-                message: format!("Scanned {}/{} files ({} to sync)", scanned, total, to_download.len()),
-            }).ok();
+        if is_soft_path(&file.path) {
+            // Addon/font files: user may have installed or updated them — never overwrite.
+            continue;
+        }
+        if let Some(expected) = file.size {
+            if std::fs::metadata(&local).map(|m| m.len()).unwrap_or(0) != expected {
+                to_download.push(file);
+                continue;
+            }
+        }
+        needs_hash.push((i, local));
+    }
+
+    let mut hash_handles = Vec::new();
+    for (i, local) in &needs_hash {
+        let idx = *i;
+        let sha = manifest.files[idx].sha256.clone();
+        let local = local.clone();
+        hash_handles.push(tokio::task::spawn_blocking(move || {
+            (idx, compute_sha256(&local).ok().map_or(false, |h| h == sha))
+        }));
+    }
+    for handle in hash_handles {
+        let (idx, match_) = handle.await.map_err(|e| format!("Hash task failed: {}", e))?;
+        if !match_ {
+            to_download.push(&manifest.files[idx]);
         }
     }
+
+    emit(&app, "client-progress", ClientSyncProgress {
+        downloaded: total - 1, total, speed: "".into(),
+        phase: "scanning".into(),
+        message: format!("Scanned {} files ({} to sync)", total, to_download.len()),
+    }).ok();
 
     if to_download.is_empty() {
         let exe = find_wow_exe(&dir).ok_or("Client files exist but no WoW.exe found")?;
         let exe_str = exe.to_string_lossy().to_string();
         ensure_realmlist(&dir, &config.server_address);
         {
-            let mut cfg = state.config.lock().unwrap();
+            let mut cfg = state.config.lock().unwrap_or_else(|e| e.into_inner());
             cfg.game_path = Some(exe_str.clone());
+            cfg.client_version = manifest.version.clone();
             let path = state.config_path.clone();
-            save_config(&path, &cfg);
+            save_config(&path, &cfg).map_err(|e| format!("Failed to save game path: {}", e))?;
         }
         emit(&app, "client-progress", ClientSyncProgress {
             downloaded: total, total, speed: "".into(),
@@ -580,13 +714,7 @@ async fn download_client(
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
 
-        let response = reqwest::get(&file_url).await
-            .map_err(|e| format!("Failed: {} - {}", file.path, e))?;
-        if !response.status().is_success() {
-            return Err(format!("HTTP {} for: {}", response.status(), file.path));
-        }
-        let bytes = response.bytes().await
-            .map_err(|e| format!("Download error: {}", e))?;
+        let bytes = download_file(&client, &file_url, &file.path).await?;
         cumulative_bytes += bytes.len() as u64;
 
         // Atomic write: temp file then rename to prevent partial files on crash
@@ -617,10 +745,10 @@ async fn download_client(
     let exe = find_wow_exe(&dir).ok_or("No WoW.exe found in downloaded client")?;
     let exe_str = exe.to_string_lossy().to_string();
     {
-        let mut cfg = state.config.lock().unwrap();
+        let mut cfg = state.config.lock().unwrap_or_else(|e| e.into_inner());
         cfg.game_path = Some(exe_str.clone());
         let path = state.config_path.clone();
-        save_config(&path, &cfg);
+        save_config(&path, &cfg).map_err(|e| format!("Failed to save game path: {}", e))?;
     }
 
     emit(&app, "client-progress", ClientSyncProgress {
@@ -633,7 +761,7 @@ async fn download_client(
 
 #[tauri::command]
 fn get_realmlist(state: State<AppState>) -> Result<String, String> {
-    let config = state.config.lock().unwrap();
+    let config = state.config.lock().unwrap_or_else(|e| e.into_inner());
     let dir = game_dir(&config).ok_or("Game client not installed")?;
     for p in realmlist_paths(&dir) {
         if p.exists() { return std::fs::read_to_string(&p).map_err(|e| e.to_string()); }
@@ -643,7 +771,7 @@ fn get_realmlist(state: State<AppState>) -> Result<String, String> {
 
 #[tauri::command]
 fn set_realmlist(state: State<AppState>, content: String) -> Result<(), String> {
-    let config = state.config.lock().unwrap();
+    let config = state.config.lock().unwrap_or_else(|e| e.into_inner());
     let dir = game_dir(&config).ok_or("Game client not installed")?;
     for p in realmlist_paths(&dir) {
         if p.exists() { let _ = std::fs::write(&p, &content); return Ok(()); }
@@ -690,7 +818,9 @@ pub fn run() {
             let config_path = path.join("config.json");
             let config = load_config(&config_path, &default_config);
             if !config_path.exists() {
-                save_config(&config_path, &config);
+                if let Err(e) = save_config(&config_path, &config) {
+                    eprintln!("Failed to write config: {}", e);
+                }
             }
             app.manage(AppState {
                 config: Mutex::new(config),
@@ -721,3 +851,5 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("error while running application");
 }
+
+
