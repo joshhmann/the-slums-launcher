@@ -202,10 +202,22 @@ fn compute_sha256(path: &PathBuf) -> Result<String, String> {
 }
 
 fn clients_dir(app: &tauri::AppHandle) -> PathBuf {
-    app.path()
+    let exe_dir = app.path()
         .executable_dir()
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .join("client")
+        .unwrap_or_else(|_| PathBuf::from("."));
+    // "Follow the launcher" only works when the launcher's own directory is
+    // writable. Installs under Program Files (or other protected dirs) reject
+    // writes for normal users, so fall back to a user-writable location.
+    let probe = exe_dir.join(".launcher_write_probe");
+    if std::fs::write(&probe, b"").is_ok() {
+        let _ = std::fs::remove_file(&probe);
+        exe_dir.join("client")
+    } else {
+        app.path()
+            .app_data_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join("client")
+    }
 }
 
 fn http_client() -> Result<reqwest::Client, String> {
