@@ -150,7 +150,74 @@ fn resolve_game_dir(config: &Config, app: &tauri::AppHandle) -> Option<PathBuf> 
     if find_wow_exe(&default).is_some() {
         return Some(default);
     }
+    // Nearby install: a client folder sitting next to the launcher binary
+    // (e.g. "The Slums Launcher" and "client" in the same directory).
+    if let Ok(exe_dir) = app.path().executable_dir() {
+        for candidate in [
+            exe_dir.join("client"),
+            exe_dir.join("The Slums Client"),
+            exe_dir.join("World of Warcraft 3.3.5a"),
+        ] {
+            if find_wow_exe(&candidate).is_some() {
+                return Some(candidate);
+            }
+        }
+        // Some installs place the game directly in the launcher's folder.
+        if find_wow_exe(&exe_dir).is_some() {
+            return Some(exe_dir);
+        }
+    }
     game_dir(config)
+}
+
+/// Scan obvious locations for an existing WoW install that the user could
+/// "add" — used to offer adding a found client instead of forcing a download.
+fn detect_existing_client(app: &tauri::AppHandle) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut push = |d: PathBuf| {
+        if !found.iter().any(|x: &PathBuf| x == &d) {
+            found.push(d);
+        }
+    };
+
+    // Default install location.
+    let default = clients_dir(app);
+    if find_wow_exe(&default).is_some() {
+        push(default);
+    }
+
+    // Near the launcher binary.
+    if let Ok(exe_dir) = app.path().executable_dir() {
+        for candidate in [
+            exe_dir.join("client"),
+            exe_dir.join("The Slums Client"),
+            exe_dir.join("World of Warcraft 3.3.5a"),
+        ] {
+            if find_wow_exe(&candidate).is_some() {
+                push(candidate);
+            }
+        }
+        if find_wow_exe(&exe_dir).is_some() {
+            push(exe_dir);
+        }
+    }
+
+    // ~/Games and ~/Documents common locations.
+    if let Some(home) = std::env::var_os("HOME") {
+        let home = PathBuf::from(home);
+        for candidate in [
+            home.join("Games").join("World of Warcraft 3.3.5a"),
+            home.join("Games").join("wow"),
+            home.join("Documents").join("World of Warcraft 3.3.5a"),
+            home.join("WoW"),
+        ] {
+            if find_wow_exe(&candidate).is_some() {
+                push(candidate);
+            }
+        }
+    }
+
+    found
 }
 
 fn find_wow_exe(dir: &PathBuf) -> Option<PathBuf> {
@@ -490,6 +557,14 @@ async fn get_client_status(
             client_path: clients_dir(&app).to_string_lossy().to_string(),
         })
     }
+}
+
+#[tauri::command]
+fn detect_clients(app: tauri::AppHandle) -> Vec<String> {
+    detect_existing_client(&app)
+        .into_iter()
+        .map(|p| p.to_string_lossy().to_string())
+        .collect()
 }
 
 #[tauri::command]
@@ -1403,6 +1478,7 @@ pub fn run() {
             save_settings,
             get_client_status,
             launch_game,
+            detect_clients,
             clear_cache,
             list_installed_addons,
             fetch_addon_list,

@@ -92,6 +92,18 @@ async function updateClientState() {
   const s = clientStatus;
   if (!s || s.phase === 'not_installed') {
     el.stateNotInstalled.classList.remove('hidden');
+    // Look for an existing client nearby and offer to add it.
+    try {
+      const found = await invoke('detect_clients');
+      const existingRow = $('#existing-found');
+      if (existingRow && found && found.length > 0) {
+        existingRow.classList.remove('hidden');
+        $('#existing-path').textContent = found[0];
+        $('#existing-path').dataset.path = found[0];
+      } else if (existingRow) {
+        existingRow.classList.add('hidden');
+      }
+    } catch (e) { /* detection is best-effort */ }
   } else {
     el.stateReady.classList.remove('hidden');
     showReadyState();
@@ -203,6 +215,21 @@ $('#btn-clear-cache')?.addEventListener('click', async () => {
   try {
     await invoke('clear_cache');
     showToast('Cache cleared', 'success');
+  } catch (e) {
+    showToast('Failed: ' + e, 'error');
+  }
+});
+
+// ── Use Detected Client ──────────────────────────
+
+$('#btn-use-found')?.addEventListener('click', async () => {
+  try {
+    const path = $('#existing-path').dataset.path;
+    if (!path) return;
+    config.game_path = path;
+    await invoke('save_settings', { game_path: path });
+    updateClientState();
+    showToast('Using existing client at ' + path, 'success');
   } catch (e) {
     showToast('Failed: ' + e, 'error');
   }
