@@ -194,6 +194,79 @@ fn ensure_realmlist(game_dir: &PathBuf, server_addr: &str) {
     }
 }
 
+/// Write a sensible first-run Config.wtf (windowed mode, 1080p) only if the
+/// user has not created one yet. Config.wtf is a soft path — once the user
+/// edits it, we never touch it again.
+fn ensure_default_config(game_dir: &PathBuf) {
+    // WoW reads WTF/Config.wtf (created on first run). Don't clobber an
+    // existing config — that belongs to the user.
+    let path = game_dir.join("WTF").join("Config.wtf");
+    if path.exists() { return; }
+
+    // Detect the primary monitor size on Windows via the win32 API; on other
+    // platforms (or on failure) fall back to 1920x1080.
+    let (w, h) = detect_desktop_resolution();
+
+    let content = format!(
+        "SET gxWindow \"1\"\n\
+         SET gxMaximize \"1\"\n\
+         SET gxResolution \"{}x{}\"\n\
+         SET gxRefresh \"60\"\n\
+         SET gxMultisample \"1\"\n\
+         SET gxEnableAllDisplayModes \"0\"\n\
+         SET gamma \"1.0\"\n\
+         SET mouseSpeed \"1\"\n\
+         SET readTOS \"1\"\n\
+         SET readEULA \"1\"\n\
+         SET readTerminationWithoutNotice \"1\"\n\
+         SET showToolsUI \"0\"\n\
+         SET showGameTime \"1\"\n\
+         SET showVKeyCodes \"0\"\n\
+         SET Sound_EnableMusic \"1\"\n\
+         SET Sound_EnableAmbience \"1\"\n\
+         SET Sound_EnableAllSound \"1\"\n\
+         SET Sound_MusicVolume \"0.4\"\n\
+         SET Sound_AmbienceVolume \"0.5\"\n\
+         SET Sound_MasterVolume \"1\"\n\
+         SET locale \"enUS\"\n\
+         SET maximized \"1\"\n\
+         SET videoQualityLevel \"3\"\n",
+        w, h,
+    );
+
+    if let Some(parent) = path.parent() {
+        if std::fs::create_dir_all(parent).is_ok() {
+            let _ = std::fs::write(&path, content);
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn detect_desktop_resolution() -> (u32, u32) {
+    // Use winapi's GetSystemMetrics(SM_CXSCREEN / SM_CYSCREEN) for the
+    // primary display. This is a best-effort call; any failure falls back to
+    // 1920x1080.
+    use std::mem::MaybeUninit;
+    let (mut w, mut h) = (0u32, 0u32);
+    unsafe {
+        let user32 = winapi::um::libloaderapi::GetModuleHandleA(c"user32.dll".as_ptr());
+        if !user32.is_null() {
+            type GetSystemMetricsFn = unsafe extern "system" fn(i32) -> i32;
+            if let Some(f) = winapi::um::libloaderapi::GetProcAddress(user32, c"GetSystemMetrics".as_ptr()) {
+                let f: GetSystemMetricsFn = std::mem::transmute(f);
+                w = f(0) as u32; // SM_CXSCREEN
+                h = f(1) as u32; // SM_CYSCREEN
+            }
+        }
+    }
+    if w == 0 || h == 0 { (1920, 1080) } else { (w, h) }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn detect_desktop_resolution() -> (u32, u32) {
+    (1920, 1080)
+}
+
 fn compute_sha256(path: &PathBuf) -> Result<String, String> {
     let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let mut hasher = Sha256::new();
@@ -418,6 +491,7 @@ fn launch_game(app: tauri::AppHandle, state: State<AppState>) -> Result<(), Stri
         .ok_or("Game client not installed. Click Install to download it.")?;
     let exe = find_wow_exe(&dir).ok_or("Could not find WoW executable")?;
     ensure_realmlist(&dir, &config.server_address);
+    ensure_default_config(&dir);
 
     let child = if cfg!(target_os = "linux") {
         Command::new("wine").arg(&exe)
