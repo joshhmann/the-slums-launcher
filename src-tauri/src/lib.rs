@@ -1223,8 +1223,10 @@ fn extract_archive(archive: &PathBuf, dest: &PathBuf) -> Result<(), String> {
 
 // ── Updates ─────────────────────────────────────────
 
+// Self-hosted update channel: CI uploads signed bundles + latest.json to
+// the webapp server (works with a private repo — no GitHub auth needed).
 const UPDATE_ENDPOINT: &str =
-    "https://github.com/joshhmann/the-slums-launcher/releases/latest/download/latest.json";
+    "https://wowslums.asslorde.com/updates/latest.json";
 
 #[tauri::command]
 async fn check_for_update(

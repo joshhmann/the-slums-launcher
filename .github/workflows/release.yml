@@ -84,3 +84,44 @@ jobs:
           # Build already done above (patched AppImage); just upload bundles
           # from target/release/bundle/ and write latest.json for the updater.
           tauriScript: "true"
+
+      # Sync signed bundles + latest.json to the self-hosted update channel
+      # (works with the private repo — the server serves these publicly).
+      - name: Upload updates to server
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          mkdir -p /tmp/updates
+          # latest.json references the GitHub release asset URLs — rewrite to
+          # our server so the launcher downloads bundles from us too.
+          gh release download stable --repo joshhmann/the-slums-launcher \
+            --pattern 'latest.json' --dir /tmp/updates --clobber
+          # Grab the installer for this platform.
+          if [ "${{ matrix.platform }}" = "windows-latest" ]; then
+            gh release download stable --repo joshhmann/the-slums-launcher \
+              --pattern '*.msi' --dir /tmp/updates --clobber || true
+            gh release download stable --repo joshhmann/the-slums-launcher \
+              --pattern '*.exe' --dir /tmp/updates --clobber || true
+          else
+            gh release download stable --repo joshhmann/the-slums-launcher \
+              --pattern '*.AppImage' --dir /tmp/updates --clobber || true
+          fi
+          # Rewrite latest.json urls from github to our CDN
+          python3 - <<'PY'
+          import json, os
+          p = '/tmp/updates/latest.json'
+          if not os.path.exists(p):
+              print('no latest.json'); raise SystemExit(0)
+          d = json.load(open(p))
+          base = 'https://wowslums.asslorde.com/updates/'
+          for f in d.get('files', []):
+              f['url'] = base + os.path.basename(f['url'])
+          json.dump(d, open(p, 'w'), indent=2)
+          print('latest.json rewritten for self-hosted CDN')
+          PY
+          # Ship to the server via the deploy key.
+          echo "$DEPLOY_SSH_KEY" > /tmp/deploy_key
+          chmod 600 /tmp/deploy_key
+          scp -i /tmp/deploy_key -o StrictHostKeyChecking=no \
+            /tmp/updates/* ci-deploy@192.168.0.69:/srv/slums-updates/
