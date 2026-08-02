@@ -8,10 +8,6 @@ on:
 permissions:
   contents: write
 
-env:
-  TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-  TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
-
 jobs:
   build:
     strategy:
@@ -49,7 +45,7 @@ jobs:
       - name: Install deps
         run: npm ci
 
-      # Windows: build + publish in one step via tauri-action (no patch needed).
+      # Windows: build + publish in one step via tauri-action.
       - name: Build & Publish (Windows)
         if: matrix.platform == 'windows-latest'
         uses: tauri-apps/tauri-action@v0
@@ -82,51 +78,5 @@ jobs:
           releaseBody: "The Slums Launcher build."
           releaseDraft: false
           prerelease: false
-          # Build already done above (patched AppImage); just upload bundles
-          # from target/release/bundle/ and write latest.json for the updater.
+          # Build already done above (patched AppImage); just upload bundles.
           tauriScript: "true"
-
-      # Sync signed bundles + latest.json to the self-hosted update channel
-      # (works with the private repo — the server serves these publicly).
-      - name: Upload updates to server
-        shell: bash
-        if: env.DEPLOY_SSH_KEY != ''
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
-        run: |
-          mkdir -p /tmp/updates
-          # Determine the app version from tauri.conf.json (source of truth).
-          VERSION=$(python3 -c "import json;print(json.load(open('src-tauri/tauri.conf.json'))['version'])")
-          TAG="v${VERSION}"
-          echo "Syncing release $TAG"
-          gh release download "$TAG" --repo joshhmann/the-slums-launcher \
-            --pattern 'latest.json' --dir /tmp/updates --clobber || true
-          # Grab the installer for this platform.
-          if [ "${{ matrix.platform }}" = "windows-latest" ]; then
-            gh release download "$TAG" --repo joshhmann/the-slums-launcher \
-              --pattern '*.msi' --dir /tmp/updates --clobber || true
-            gh release download "$TAG" --repo joshhmann/the-slums-launcher \
-              --pattern '*.exe' --dir /tmp/updates --clobber || true
-          else
-            gh release download "$TAG" --repo joshhmann/the-slums-launcher \
-              --pattern '*.AppImage' --dir /tmp/updates --clobber || true
-          fi
-          # Rewrite latest.json urls from github to our CDN
-          python3 - <<'PY'
-          import json, os
-          p = '/tmp/updates/latest.json'
-          if not os.path.exists(p):
-              print('no latest.json'); raise SystemExit(0)
-          d = json.load(open(p))
-          base = 'https://wowslums.asslorde.com/updates/'
-          for f in d.get('files', []):
-              f['url'] = base + os.path.basename(f['url'])
-          json.dump(d, open(p, 'w'), indent=2)
-          print('latest.json rewritten for self-hosted CDN')
-          PY
-          # Ship to the server via the deploy key.
-          echo "$DEPLOY_SSH_KEY" > /tmp/deploy_key
-          chmod 600 /tmp/deploy_key
-          scp -i /tmp/deploy_key -o StrictHostKeyChecking=no \
-            /tmp/updates/* ci-deploy@192.168.0.69:/srv/slums-updates/

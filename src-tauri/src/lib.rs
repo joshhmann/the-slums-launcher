@@ -9,7 +9,6 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{Emitter, Manager, State};
 use tauri_plugin_opener::OpenerExt;
-use tauri_plugin_updater::UpdaterExt;
 
 static DEFAULT_CONFIG: &str = include_str!("../config.json");
 
@@ -1221,59 +1220,149 @@ fn extract_archive(archive: &PathBuf, dest: &PathBuf) -> Result<(), String> {
     Err("Could not extract archive — 7z not available".into())
 }
 
-// ── Updates ─────────────────────────────────────────
+// ── Updates (GitHub API — repo is public, no signing needed) ──
 
-// Self-hosted update channel: CI uploads signed bundles + latest.json to
-// the webapp server (works with a private repo — no GitHub auth needed).
-const UPDATE_ENDPOINT: &str =
-    "https://wowslums.asslorde.com/updates/latest.json";
+const RELEASE_API: &str = "https://api.github.com/repos/joshhmann/the-slums-launcher/releases/latest";
+
+fn is_newer(remote: &str, current: &str) -> bool {
+    fn parse(v: &str) -> Vec<u64> {
+        v.trim_start_matches('v')
+            .split(['.', '-'])
+            .filter_map(|p| p.parse::<u64>().ok())
+            .collect()
+    }
+    let (r, c) = (parse(remote), parse(current));
+    for (a, b) in r.iter().zip(c.iter()) {
+        if a != b { return a > b; }
+    }
+    r.len() > c.len()
+}
+
+async fn fetch_latest_release() -> Result<serde_json::Value, String> {
+    let client = http_client()?;
+    let resp = tokio::time::timeout(
+        Duration::from_secs(30),
+        client.get(RELEASE_API).header("User-Agent", "the-slums-launcher").send(),
+    ).await
+        .map_err(|_| "Timed out fetching latest release".to_string())?
+        .map_err(|e| format!("Failed to fetch release: {}", e))?;
+    if !resp.status().is_success() {
+        return Err(format!("GitHub returned {} for latest release", resp.status()));
+    }
+    resp.json().await.map_err(|e| format!("Invalid release JSON: {}", e))
+}
 
 #[tauri::command]
 async fn check_for_update(
     app: tauri::AppHandle,
 ) -> Result<serde_json::Value, String> {
-    let updater = app.updater_builder()
-        .endpoints(vec![UPDATE_ENDPOINT.parse().map_err(|e| format!("Bad endpoint: {}", e))?])
-        .map_err(|e| format!("Failed to set endpoints: {}", e))?
-        .build()
-        .map_err(|e| format!("Failed to init updater: {}", e))?;
+    let release = fetch_latest_release().await?;
+    let remote_version = release["tag_name"].as_str().unwrap_or("").trim_start_matches('v').to_string();
+    let current_version = app.package_info().version.to_string();
 
-    match tokio::time::timeout(Duration::from_secs(30), updater.check()).await {
-        Ok(Ok(Some(update))) => Ok(serde_json::json!({
-            "available": true,
-            "version": update.version,
-            "current_version": app.package_info().version.to_string(),
-            "notes": update.body,
-        })),
-        Ok(Ok(None)) => Ok(serde_json::json!({
+    if remote_version.is_empty() || !is_newer(&remote_version, &current_version) {
+        return Ok(serde_json::json!({
             "available": false,
-            "current_version": app.package_info().version.to_string(),
-        })),
-        Ok(Err(e)) => Err(format!("Update check failed: {}", e)),
-        Err(_) => Err("Update check timed out".into()),
+            "current_version": current_version,
+            "latest_version": remote_version,
+        }));
     }
+
+    Ok(serde_json::json!({
+        "available": true,
+        "version": remote_version,
+        "current_version": current_version,
+        "notes": release["body"].as_str().unwrap_or(""),
+        "url": release["html_url"].as_str().unwrap_or(""),
+    }))
 }
 
 #[tauri::command]
 async fn download_and_install_update(
     app: tauri::AppHandle,
 ) -> Result<String, String> {
-    let updater = app.updater_builder()
-        .endpoints(vec![UPDATE_ENDPOINT.parse().map_err(|e| format!("Bad endpoint: {}", e))?])
-        .map_err(|e| format!("Failed to set endpoints: {}", e))?
-        .build()
-        .map_err(|e| format!("Failed to init updater: {}", e))?;
+    let release = fetch_latest_release().await?;
+    let remote_version = release["tag_name"].as_str().unwrap_or("").trim_start_matches('v').to_string();
+    let current_version = app.package_info().version.to_string();
+    if !is_newer(&remote_version, &current_version) {
+        return Err("No update available".into());
+    }
 
-    let update = tokio::time::timeout(Duration::from_secs(30), updater.check()).await
-        .map_err(|_| "Update check timed out".to_string())?
-        .map_err(|e| format!("Update check failed: {}", e))?
-        .ok_or("No update available".to_string())?;
+    // Pick the platform asset.
+    #[cfg(target_os = "windows")]
+    let (asset_match, install_suffix) = (vec![".msi", ".exe"], ".exe");
+    #[cfg(target_os = "linux")]
+    let (asset_match, install_suffix) = (vec![".AppImage"], ".AppImage");
+    #[cfg(target_os = "macos")]
+    let (asset_match, install_suffix) = (vec![".dmg"], ".dmg");
 
-    update.download_and_install(|_, _| {}, || {})
-        .await
-        .map_err(|e| format!("Update failed: {}", e))?;
+    let mut chosen: Option<(String, String)> = None;
+    for a in release["assets"].as_array().unwrap_or(&vec![]) {
+        let name = a["name"].as_str().unwrap_or("");
+        let has_match = asset_match.iter().any(|m| name.ends_with(m));
+        // Prefer NSIS setup exe over raw exe for in-place upgrade on Windows.
+        let prefer = if cfg!(target_os = "windows") {
+            name.contains("setup") || name.contains("_x64") && !name.ends_with(".msi")
+        } else { true };
+        if has_match && prefer {
+            chosen = Some((name.to_string(), a["browser_download_url"].as_str().unwrap_or("").to_string()));
+            break;
+        }
+    }
+    let (asset_name, asset_url) = chosen.ok_or("Could not find a compatible installer for this platform")?;
+    let _ = install_suffix;
 
-    Ok("Update installed — restart the launcher".into())
+    emit(&app, "client-progress", ClientSyncProgress {
+        downloaded: 0, total: 1, speed: "".into(),
+        phase: "connecting".into(),
+        message: format!("Downloading {}...", asset_name),
+    })?;
+
+    let client = http_client()?;
+    let bytes = download_file(&client, &asset_url, &asset_name).await?;
+
+    emit(&app, "client-progress", ClientSyncProgress {
+        downloaded: 0, total: 1, speed: "".into(),
+        phase: "syncing".into(),
+        message: "Installing update...".into(),
+    })?;
+
+    // Windows: run the NSIS installer silently (currentUser mode keeps the
+    // app data; the installer handles the in-place upgrade).
+    // Linux: swap the running AppImage — replace the executable file and
+    // relaunch. Tauri AppImages self-replace on next run; simplest reliable
+    // path is dropping the new AppImage over the old one's path.
+    #[cfg(target_os = "windows")]
+    {
+        let tmp = std::env::temp_dir().join(&asset_name);
+        std::fs::write(&tmp, &bytes).map_err(|e| format!("Failed to write installer: {}", e))?;
+        let status = std::process::Command::new(&tmp)
+            .arg("/S")
+            .spawn()
+            .map_err(|e| format!("Failed to start installer: {}", e))?;
+        let _ = status;
+        return Ok("Installer launched — launcher will restart when complete".into());
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        // Install new AppImage next to the current one, then relaunch.
+        let exe_path = std::env::current_exe().map_err(|e| e.to_string())?;
+        let new_path = exe_path.with_extension("new.AppImage");
+        std::fs::write(&new_path, &bytes).map_err(|e| format!("Failed to write AppImage: {}", e))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&new_path, std::fs::Permissions::from_mode(0o755));
+        }
+        let _ = std::process::Command::new(&new_path).spawn();
+        return Ok("New launcher started".into());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        return Err("macOS updates not yet supported".into());
+    }
 }
 
 // ── App entry ───────────────────────────────────────────────
@@ -1285,7 +1374,6 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(move |app| {
             let path = config_dir(app.handle());
             let config_path = path.join("config.json");
