@@ -56,7 +56,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: stable
+          # One release per version — tag vX.Y.Z, always marked latest.
+          tagName: v__VERSION__
           releaseName: "The Slums Launcher — v__VERSION__"
           releaseBody: "The Slums Launcher build."
           releaseDraft: false
@@ -76,7 +77,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: stable
+          tagName: v__VERSION__
           releaseName: "The Slums Launcher — v__VERSION__"
           releaseBody: "The Slums Launcher build."
           releaseDraft: false
@@ -93,18 +94,20 @@ jobs:
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
         run: |
           mkdir -p /tmp/updates
-          # latest.json references the GitHub release asset URLs — rewrite to
-          # our server so the launcher downloads bundles from us too.
-          gh release download stable --repo joshhmann/the-slums-launcher \
-            --pattern 'latest.json' --dir /tmp/updates --clobber
+          # Determine the app version from tauri.conf.json (source of truth).
+          VERSION=$(python3 -c "import json;print(json.load(open('src-tauri/tauri.conf.json'))['version'])")
+          TAG="v${VERSION}"
+          echo "Syncing release $TAG"
+          gh release download "$TAG" --repo joshhmann/the-slums-launcher \
+            --pattern 'latest.json' --dir /tmp/updates --clobber || true
           # Grab the installer for this platform.
           if [ "${{ matrix.platform }}" = "windows-latest" ]; then
-            gh release download stable --repo joshhmann/the-slums-launcher \
+            gh release download "$TAG" --repo joshhmann/the-slums-launcher \
               --pattern '*.msi' --dir /tmp/updates --clobber || true
-            gh release download stable --repo joshhmann/the-slums-launcher \
+            gh release download "$TAG" --repo joshhmann/the-slums-launcher \
               --pattern '*.exe' --dir /tmp/updates --clobber || true
           else
-            gh release download stable --repo joshhmann/the-slums-launcher \
+            gh release download "$TAG" --repo joshhmann/the-slums-launcher \
               --pattern '*.AppImage' --dir /tmp/updates --clobber || true
           fi
           # Rewrite latest.json urls from github to our CDN
