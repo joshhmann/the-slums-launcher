@@ -482,25 +482,43 @@ async fn get_client_status(
 }
 
 #[tauri::command]
-fn launch_game(app: tauri::AppHandle, state: State<AppState>) -> Result<(), String> {
-    let config = state.config.lock().unwrap_or_else(|e| e.into_inner());
-    let dir = game_dir(&config)
-        .or_else(|| {
-            let d = clients_dir(&app);
-            if d.exists() { Some(d) } else { None }
-        })
-        .ok_or("Game client not installed. Click Install to download it.")?;
+async fn launch_game(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    // Clone the bits we need so the lock guard is dropped before any await.
+    let (dir, server_address) = {
+        let config = state.config.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = game_dir(&config)
+            .or_else(|| {
+                let d = clients_dir(&app);
+                if d.exists() { Some(d) } else { None }
+            })
+            .ok_or("Game client not installed. Click Install to download it.")?;
+        (dir, config.server_address.clone())
+    };
     let exe = find_wow_exe(&dir).ok_or("Could not find WoW executable")?;
-    ensure_realmlist(&dir, &config.server_address);
+    ensure_realmlist(&dir, &server_address);
     ensure_default_config(&dir);
+
+    #[cfg(target_os = "linux")]
+    {
+        let wine_prefix = linux_wine_prefix();
+        ensure_dxvk_conf(&wine_prefix);
+        // First launch: install DXVK into the isolated prefix via winetricks
+        // if it isn't set up yet. This is a one-time cost (downloads DXVK).
+        if !dxvk_installed(&wine_prefix) {
+            emit(&app, "client-progress", ClientSyncProgress {
+                downloaded: 0, total: 1, speed: "".into(),
+                phase: "connecting".into(),
+                message: "Setting up DXVK (first launch — one-time download)...".into(),
+            })?;
+            setup_dxvk(&wine_prefix).await?;
+        }
+    }
 
     let child = if cfg!(target_os = "linux") {
         let wine_prefix = linux_wine_prefix();
-        ensure_dxvk_conf(&wine_prefix);
         Command::new("wine")
             .arg(&exe)
             .current_dir(&dir)
-            // Proven Wine+DXVK environment for WoW 3.3.5a (see setup notes):
             .env("WINEPREFIX", &wine_prefix)
             .env("WINEARCH", "win64")
             .env("DXVK_CONFIG_FILE", wine_prefix.join("dxvk.conf"))
@@ -524,6 +542,64 @@ fn launch_game(app: tauri::AppHandle, state: State<AppState>) -> Result<(), Stri
         Err(e) => Err(format!("Failed to launch {}: {}", exe.display(), e)),
     }
 }
+
+/// True when DXVK DLLs are present in the prefix's system32.
+#[cfg(target_os = "linux")]
+fn dxvk_installed(prefix: &PathBuf) -> bool {
+    let system32 = prefix.join("drive_c").join("windows").join("system32");
+    system32.join("d3d9.dll").exists() || system32.join("d3d11.dll").exists()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn dxvk_installed(_prefix: &PathBuf) -> bool { true }
+
+/// Run `winetricks -q dxvk` against the isolated prefix. Returns an error
+/// with install instructions if winetricks is unavailable.
+#[cfg(target_os = "linux")]
+async fn setup_dxvk(prefix: &PathBuf) -> Result<(), String> {
+    let has_winetricks = std::process::Command::new("sh")
+        .args(["-c", "command -v winetricks >/dev/null 2>&1"])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !has_winetricks {
+        return Err(
+            "winetricks not found. Install it first:\n\
+             Debian/Ubuntu: sudo apt install winetricks\n\
+             Arch: sudo pacman -S --needed winetricks\n\
+             Then run 'Check Linux Deps' and try again.".into()
+        );
+    }
+
+    // Ensure the prefix is bootstrapped before winetricks touches it.
+    let _ = std::process::Command::new("wineboot")
+        .env("WINEPREFIX", prefix)
+        .env("WINEARCH", "win64")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+
+    // Use tokio's async Command so we can await winetricks without blocking.
+    let mut child = tokio::process::Command::new("winetricks")
+        .env("WINEPREFIX", prefix)
+        .env("WINEARCH", "win64")
+        .args(["-q", "dxvk"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| format!("Failed to start winetricks: {}", e))?;
+
+    // Allow up to 5 minutes for the DXVK download+install.
+    match tokio::time::timeout(Duration::from_secs(300), child.wait()).await {
+        Ok(Ok(status)) if status.success() => Ok(()),
+        Ok(Ok(_)) => Err("winetricks failed to install DXVK".into()),
+        Ok(Err(e)) => Err(format!("winetricks error: {}", e)),
+        Err(_) => Err("DXVK setup timed out after 5 minutes".into()),
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+async fn setup_dxvk(_prefix: &PathBuf) -> Result<(), String> { Ok(()) }
 
 /// Wine prefix used for the WoW client. Kept alongside the client data dir
 /// so nothing depends on the user's existing ~/.wine (which may be a

@@ -167,9 +167,17 @@ $('#btn-check-update')?.addEventListener('click', async () => {
 $('#btn-play')?.addEventListener('click', async () => {
   if (isDownloading) return;
   try {
+    // DXVK first-launch setup can take a while — show progress bar
+    const status = await invoke('get_client_status');
+    isDownloading = true;
+    showDlBar('Launching...', 0);
     await invoke('launch_game');
+    isDownloading = false;
+    hideDlBar();
     showToast('Game launched!', 'success');
   } catch (e) {
+    isDownloading = false;
+    hideDlBar();
     showToast('Failed: ' + e, 'error');
   }
 });
