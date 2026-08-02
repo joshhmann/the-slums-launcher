@@ -247,14 +247,14 @@ fn detect_desktop_resolution() -> (u32, u32) {
     // Use winapi's GetSystemMetrics(SM_CXSCREEN / SM_CYSCREEN) for the
     // primary display. This is a best-effort call; any failure falls back to
     // 1920x1080.
-    use std::mem::MaybeUninit;
     let (mut w, mut h) = (0u32, 0u32);
     unsafe {
         let user32 = winapi::um::libloaderapi::GetModuleHandleA(c"user32.dll".as_ptr());
         if !user32.is_null() {
             type GetSystemMetricsFn = unsafe extern "system" fn(i32) -> i32;
-            if let Some(f) = winapi::um::libloaderapi::GetProcAddress(user32, c"GetSystemMetrics".as_ptr()) {
-                let f: GetSystemMetricsFn = std::mem::transmute(f);
+            let proc = winapi::um::libloaderapi::GetProcAddress(user32, c"GetSystemMetrics".as_ptr());
+            if !proc.is_null() {
+                let f: GetSystemMetricsFn = std::mem::transmute(proc);
                 w = f(0) as u32; // SM_CXSCREEN
                 h = f(1) as u32; // SM_CYSCREEN
             }
