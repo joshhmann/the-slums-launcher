@@ -235,15 +235,18 @@ async function refreshOptimizerState() {
     optimizerInstalled = false;
   }
   const btn = $('#btn-install-optimizer');
+  const launchBtn = $('#btn-launch-optimizer');
   if (!btn) return;
   if (optimizerInstalled) {
     btn.textContent = 'Remove';
     btn.classList.add('btn-danger');
     btn.classList.remove('btn-secondary');
+    if (launchBtn) launchBtn.style.display = '';
   } else {
     btn.textContent = 'Install';
     btn.classList.remove('btn-danger');
     btn.classList.add('btn-secondary');
+    if (launchBtn) launchBtn.style.display = 'none';
   }
 }
 
