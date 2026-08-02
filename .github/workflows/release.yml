@@ -60,14 +60,15 @@ jobs:
           prerelease: false
           args: --target x86_64-pc-windows-msvc
 
-      # Linux: build manually (without npm postbuild hook — that double-patches
-      # and can corrupt the file), then patch AppRun (EGL fix) BEFORE upload.
+      # Linux: build manually. The EGL/webkit env vars are baked into the
+      # binary in main.rs (GSK_RENDERER=cairo etc.), so no AppImage repack
+      # is needed — repacking with appimagetool is flaky on CI runners
+      # (sfs_mksquashfs error) and was silently producing broken builds.
       - name: Build (Linux)
         if: matrix.platform == 'ubuntu-latest'
         run: |
           npm run build:frontend
           npx tauri build
-          bash scripts/patch-appimage.sh
 
       - name: Publish (Linux)
         if: matrix.platform == 'ubuntu-latest'
