@@ -321,6 +321,25 @@ fn ensure_default_config(game_dir: &PathBuf) {
 }
 
 #[cfg(target_os = "windows")]
+fn fix_wow_dpi_scaling(exe: &PathBuf) {
+    // WoW 3.3.5a is DPI-unaware; on scaled displays its window drifts/falls
+    // when dragged. Set the AppCompat "run as DPI unaware" override via reg.exe.
+    // The Layers value format is "<flags>" where DPIUNAWARE is the flag.
+    let Some(name) = exe.file_name().and_then(|n| n.to_str()) else { return };
+    // HKCU so no admin rights are needed. AppCompatFlags\Layers is read for
+    // both HKLM and HKCU; HKCU is the per-user compatibility layer.
+    let key = r"HKCU\Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Layers";
+    let _ = std::process::Command::new("reg")
+        .args(["add", key, "/v", name, "/t", "REG_SZ", "/d", "~ DPIUNAWARE", "/f"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+}
+
+#[cfg(not(target_os = "windows"))]
+fn fix_wow_dpi_scaling(_exe: &PathBuf) {}
+
+#[cfg(target_os = "windows")]
 fn detect_desktop_resolution() -> (u32, u32) {
     // Use winapi's GetSystemMetrics(SM_CXSCREEN / SM_CYSCREEN) for the
     // primary display. This is a best-effort call; any failure falls back to
@@ -579,6 +598,12 @@ async fn launch_game(app: tauri::AppHandle, state: State<'_, AppState>) -> Resul
     let exe = find_wow_exe(&dir).ok_or("Could not find WoW executable")?;
     ensure_realmlist(&dir, &server_address);
     ensure_default_config(&dir);
+
+    // Windows: WoW 3.3.5a is DPI-unaware — on scaled displays its window
+    // "falls" in the drag direction when moved. Force DPI-unaware via the
+    // AppCompat registry override so the OS manages scaling properly.
+    #[cfg(target_os = "windows")]
+    fix_wow_dpi_scaling(&exe);
 
     #[cfg(target_os = "linux")]
     {

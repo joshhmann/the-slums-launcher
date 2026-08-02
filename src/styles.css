@@ -28,13 +28,24 @@ body {
   height: 100vh;
 }
 
-#app { display:flex; flex-direction:column; height:100vh; }
+#app {
+  display:flex; flex-direction:column; height:100vh;
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+/* Interactive elements must never drag the window */
+button, input, select, a, .addon-row, .tools-row, .stat-row, td, tr {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
 
 /* Header */
 header {
   display:flex; align-items:center; gap:16px; padding:10px 24px;
   background: var(--bg-secondary); border-bottom:1px solid var(--border);
   user-select:none; -webkit-user-select:none;
+  -webkit-app-region: drag;
+  app-region: drag;
 }
 
 .logo { display:flex; align-items:center; gap:8px; }
