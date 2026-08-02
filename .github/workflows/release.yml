@@ -2,7 +2,7 @@ name: Build & Release
 
 on:
   push:
-    branches: [main, dev]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -49,28 +49,14 @@ jobs:
       - name: Install deps
         run: npm ci
 
-      - name: Bump version (canary)
-        if: github.ref_name == 'dev'
-        shell: bash
-        run: |
-          # Canary gets a -canary suffix so the updater sees it as newer than stable
-          node -e "
-            const fs = require('fs');
-            const p = JSON.parse(fs.readFileSync('src-tauri/tauri.conf.json', 'utf8'));
-            const ts = Math.floor(Date.now() / 1000).toString(36);
-            p.version = p.version + '-canary.' + ts;
-            fs.writeFileSync('src-tauri/tauri.conf.json', JSON.stringify(p, null, 2));
-            console.log('Canary version:', p.version);
-          "
-
       - name: Build & Publish
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: ${{ github.ref_name == 'main' && 'stable' || 'canary' }}
-          releaseName: ${{ github.ref_name == 'main' && 'The Slums Launcher (Stable) — v__VERSION__' || 'The Slums Launcher (Canary) — v__VERSION__' }}
-          releaseBody: ${{ github.ref_name == 'main' && 'Stable channel build.' || 'Canary channel build — may be unstable.' }}
+          tagName: stable
+          releaseName: "The Slums Launcher — v__VERSION__"
+          releaseBody: "The Slums Launcher build."
           releaseDraft: false
-          prerelease: ${{ github.ref_name != 'main' }}
+          prerelease: false
           args: ${{ matrix.args }}

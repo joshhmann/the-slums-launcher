@@ -4,6 +4,5 @@
   "server_address": "wow.asslorde.com",
   "account_url": "https://wowslums.asslorde.com/register",
   "app_name": "The Slums",
-  "app_tagline": "AzerothCore WotLK 3.3.5a",
-  "channel": "stable"
+  "app_tagline": "AzerothCore WotLK 3.3.5a"
 }

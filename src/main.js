@@ -283,10 +283,6 @@ $('#btn-settings')?.addEventListener('click', async () => {
   $('#settings-addons-url').value = config.addons_url || '';
   $('#settings-server-address').value = config.server_address || '';
   $('#settings-account-url').value = config.account_url || '';
-  try {
-    const channel = await invoke('get_channel');
-    $('#settings-channel').value = channel || 'stable';
-  } catch (e) { $('#settings-channel').value = 'stable'; }
   $('#settings-modal').classList.remove('hidden');
 });
 
@@ -303,12 +299,6 @@ $('#btn-settings-save')?.addEventListener('click', async () => {
   config.addons_url = $('#settings-addons-url').value;
   config.server_address = $('#settings-server-address').value;
   config.account_url = $('#settings-account-url').value;
-  const channel = $('#settings-channel').value;
-  try {
-    await invoke('set_channel', { channel });
-  } catch (e) {
-    showToast('Failed to set channel: ' + e, 'error');
-  }
   await invoke('save_settings', { game_path: config.game_path });
   // Note: full config object save not supported yet — these read from embedded config
   el.playServer.textContent = config.server_address;
