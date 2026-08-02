@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{Emitter, Manager, State};
 use tauri_plugin_opener::OpenerExt;
+use tauri_plugin_updater::UpdaterExt;
 
 static DEFAULT_CONFIG: &str = include_str!("../config.json");
 
@@ -30,7 +31,11 @@ struct Config {
     app_name: String,
     #[serde(default)]
     app_tagline: String,
+    #[serde(default = "default_channel")]
+    channel: String,
 }
+
+fn default_channel() -> String { "stable".into() }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct Downloads {
@@ -1067,8 +1072,88 @@ fn extract_archive(archive: &PathBuf, dest: &PathBuf) -> Result<(), String> {
     Err("Could not extract archive — 7z not available".into())
 }
 
-// ── App entry ───────────────────────────────────────────────
+// ── Updates (channel-aware) ─────────────────────────────────
 
+const STABLE_UPDATE_ENDPOINT: &str =
+    "https://github.com/joshhmann/the-slums-launcher/releases/latest/download/latest.json";
+const CANARY_UPDATE_ENDPOINT: &str =
+    "https://github.com/joshhmann/the-slums-launcher/releases/latest/download/latest.json";
+
+#[tauri::command]
+fn set_channel(state: State<AppState>, channel: String) -> Result<(), String> {
+    if channel != "stable" && channel != "canary" {
+        return Err("Invalid channel — use 'stable' or 'canary'".into());
+    }
+    let mut cfg = state.config.lock().unwrap_or_else(|e| e.into_inner());
+    cfg.channel = channel.clone();
+    let path = state.config_path.clone();
+    save_config(&path, &cfg).map_err(|e| format!("Failed to save config: {}", e))
+}
+
+#[tauri::command]
+fn get_channel(state: State<AppState>) -> String {
+    state.config.lock().unwrap_or_else(|e| e.into_inner()).channel.clone()
+}
+
+#[tauri::command]
+async fn check_for_update(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let channel = state.config.lock().unwrap_or_else(|e| e.into_inner()).channel.clone();
+    let endpoint = if channel == "canary" { CANARY_UPDATE_ENDPOINT } else { STABLE_UPDATE_ENDPOINT };
+
+    let updater = app.updater_builder()
+        .endpoints(vec![endpoint.parse().map_err(|e| format!("Bad endpoint: {}", e))?])
+        .map_err(|e| format!("Failed to set endpoints: {}", e))?
+        .build()
+        .map_err(|e| format!("Failed to init updater: {}", e))?;
+
+    match tokio::time::timeout(Duration::from_secs(30), updater.check()).await {
+        Ok(Ok(Some(update))) => Ok(serde_json::json!({
+            "available": true,
+            "channel": channel,
+            "version": update.version,
+            "current_version": app.package_info().version.to_string(),
+            "notes": update.body,
+        })),
+        Ok(Ok(None)) => Ok(serde_json::json!({
+            "available": false,
+            "channel": channel,
+            "current_version": app.package_info().version.to_string(),
+        })),
+        Ok(Err(e)) => Err(format!("Update check failed: {}", e)),
+        Err(_) => Err("Update check timed out".into()),
+    }
+}
+
+#[tauri::command]
+async fn download_and_install_update(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let channel = state.config.lock().unwrap_or_else(|e| e.into_inner()).channel.clone();
+    let endpoint = if channel == "canary" { CANARY_UPDATE_ENDPOINT } else { STABLE_UPDATE_ENDPOINT };
+
+    let updater = app.updater_builder()
+        .endpoints(vec![endpoint.parse().map_err(|e| format!("Bad endpoint: {}", e))?])
+        .map_err(|e| format!("Failed to set endpoints: {}", e))?
+        .build()
+        .map_err(|e| format!("Failed to init updater: {}", e))?;
+
+    let update = tokio::time::timeout(Duration::from_secs(30), updater.check()).await
+        .map_err(|_| "Update check timed out".to_string())?
+        .map_err(|e| format!("Update check failed: {}", e))?
+        .ok_or("No update available".to_string())?;
+
+    update.download_and_install(|_, _| {}, || {})
+        .await
+        .map_err(|e| format!("Update failed: {}", e))?;
+
+    Ok("Update installed — restart the launcher".into())
+}
+
+// ── App entry ───────────────────────────────────────────────
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let default_config: Config = serde_json::from_str(DEFAULT_CONFIG)
@@ -1077,6 +1162,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(move |app| {
             let path = config_dir(app.handle());
             let config_path = path.join("config.json");
@@ -1116,6 +1202,10 @@ pub fn run() {
             install_optimizer,
             remove_optimizer,
             launch_optimizer,
+            set_channel,
+            get_channel,
+            check_for_update,
+            download_and_install_update,
         ])
         .run(tauri::generate_context!())
         .expect("error while running application");

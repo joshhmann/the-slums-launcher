@@ -278,11 +278,15 @@ $('#btn-install-optimizer')?.addEventListener('click', async () => {
 
 // ── Settings Modal ───────────────────────────────
 
-$('#btn-settings')?.addEventListener('click', () => {
+$('#btn-settings')?.addEventListener('click', async () => {
   $('#settings-manifest-url').value = config.manifest_url || '';
   $('#settings-addons-url').value = config.addons_url || '';
   $('#settings-server-address').value = config.server_address || '';
   $('#settings-account-url').value = config.account_url || '';
+  try {
+    const channel = await invoke('get_channel');
+    $('#settings-channel').value = channel || 'stable';
+  } catch (e) { $('#settings-channel').value = 'stable'; }
   $('#settings-modal').classList.remove('hidden');
 });
 
@@ -299,6 +303,12 @@ $('#btn-settings-save')?.addEventListener('click', async () => {
   config.addons_url = $('#settings-addons-url').value;
   config.server_address = $('#settings-server-address').value;
   config.account_url = $('#settings-account-url').value;
+  const channel = $('#settings-channel').value;
+  try {
+    await invoke('set_channel', { channel });
+  } catch (e) {
+    showToast('Failed to set channel: ' + e, 'error');
+  }
   await invoke('save_settings', { game_path: config.game_path });
   // Note: full config object save not supported yet — these read from embedded config
   el.playServer.textContent = config.server_address;
@@ -424,6 +434,26 @@ listen('client-progress', (event) => {
       el.dlBarStatus.textContent = p.message;
     }
   });
+
+// ── Launcher Self-Update ─────────────────────────
+
+$('#btn-check-launcher-update')?.addEventListener('click', async () => {
+  try {
+    showToast('Checking for launcher updates...', 'info');
+    const result = await invoke('check_for_update');
+    if (result.available) {
+      const install = confirm(`Update available: v${result.version}\n\nCurrent: v${result.current_version}\n\nDownload and install now?`);
+      if (install) {
+        await invoke('download_and_install_update');
+        showToast('Update installed — launcher will restart', 'success');
+      }
+    } else {
+      showToast('Launcher is up to date (v' + result.current_version + ')', 'success');
+    }
+  } catch (e) {
+    showToast('Update check failed: ' + e, 'error');
+  }
+});
 
 // ── Addons ──────────────────────────────────────
 
