@@ -141,6 +141,18 @@ fn game_dir(config: &Config) -> Option<PathBuf> {
     }
 }
 
+/// Resolve the game directory, preferring the launcher's own default install
+/// location (clients_dir) whenever it holds a WoW executable. The saved
+/// game_path is used as an override for custom installs, but the default
+/// location must always be recognized — even without a saved path.
+fn resolve_game_dir(config: &Config, app: &tauri::AppHandle) -> Option<PathBuf> {
+    let default = clients_dir(app);
+    if find_wow_exe(&default).is_some() {
+        return Some(default);
+    }
+    game_dir(config)
+}
+
 fn find_wow_exe(dir: &PathBuf) -> Option<PathBuf> {
     let wow = dir.join("wow.exe");
     if wow.exists() { return Some(wow); }
@@ -430,10 +442,7 @@ async fn get_client_status(
 ) -> Result<ClientStatus, String> {
     let config = state.config.lock().unwrap_or_else(|e| e.into_inner()).clone();
 
-    let dir = game_dir(&config).or_else(|| {
-        let d = clients_dir(&app);
-        if d.exists() { Some(d) } else { None }
-    });
+    let dir = resolve_game_dir(&config, &app);
 
     match dir {
         Some(d) if find_wow_exe(&d).is_some() => {
@@ -488,11 +497,7 @@ async fn launch_game(app: tauri::AppHandle, state: State<'_, AppState>) -> Resul
     // Clone the bits we need so the lock guard is dropped before any await.
     let (dir, server_address) = {
         let config = state.config.lock().unwrap_or_else(|e| e.into_inner());
-        let dir = game_dir(&config)
-            .or_else(|| {
-                let d = clients_dir(&app);
-                if d.exists() { Some(d) } else { None }
-            })
+        let dir = resolve_game_dir(&config, &app)
             .ok_or("Game client not installed. Click Install to download it.")?;
         (dir, config.server_address.clone())
     };
