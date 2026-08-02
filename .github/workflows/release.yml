@@ -89,6 +89,8 @@ jobs:
       # Sync signed bundles + latest.json to the self-hosted update channel
       # (works with the private repo — the server serves these publicly).
       - name: Upload updates to server
+        shell: bash
+        if: env.DEPLOY_SSH_KEY != ''
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
