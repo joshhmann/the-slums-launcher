@@ -495,8 +495,19 @@ fn launch_game(app: tauri::AppHandle, state: State<AppState>) -> Result<(), Stri
     ensure_default_config(&dir);
 
     let child = if cfg!(target_os = "linux") {
-        Command::new("wine").arg(&exe)
+        let wine_prefix = linux_wine_prefix();
+        ensure_dxvk_conf(&wine_prefix);
+        Command::new("wine")
+            .arg(&exe)
             .current_dir(&dir)
+            // Proven Wine+DXVK environment for WoW 3.3.5a (see setup notes):
+            .env("WINEPREFIX", &wine_prefix)
+            .env("WINEARCH", "win64")
+            .env("DXVK_CONFIG_FILE", wine_prefix.join("dxvk.conf"))
+            .env("DXVK_STATE_CACHE_PATH", wine_prefix.join("dxvk-cache"))
+            .env("WINE_LARGE_ADDRESS_AWARE", "1")
+            .env("WINEDEBUG", "-all")
+            .env("mesa_glthread", "true")
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
@@ -511,6 +522,72 @@ fn launch_game(app: tauri::AppHandle, state: State<AppState>) -> Result<(), Stri
     match child {
         Ok(_) => Ok(()),
         Err(e) => Err(format!("Failed to launch {}: {}", exe.display(), e)),
+    }
+}
+
+/// Wine prefix used for the WoW client. Kept alongside the client data dir
+/// so nothing depends on the user's existing ~/.wine (which may be a
+/// different prefix/arch and break the game).
+#[cfg(target_os = "linux")]
+fn linux_wine_prefix() -> PathBuf {
+    let home = std::env::var_os("HOME").unwrap_or_else(|| ".".into());
+    PathBuf::from(home).join(".local/share/slums-launcher/wine")
+}
+
+#[cfg(not(target_os = "linux"))]
+fn linux_wine_prefix() -> PathBuf {
+    PathBuf::from(".")
+}
+
+/// Write the proven DXVK configuration for WoW 3.3.5a if the prefix lacks
+/// one. dxvk.conf lives inside the prefix so it travels with it.
+#[cfg(target_os = "linux")]
+fn ensure_dxvk_conf(prefix: &PathBuf) {
+    let path = prefix.join("dxvk.conf");
+    if path.exists() { return; }
+    let content = "\
+d3d9.maxFrameLatency = 1
+d3d9.presentInterval = 1
+dxgi.tearFree = True
+dxvk.enableStateCache = True
+dxvk.enableGraphicsPipelineLibrary = True
+d3d9.floatEmulation = strict
+";
+    if std::fs::create_dir_all(prefix).is_ok() {
+        let _ = std::fs::write(&path, content);
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn ensure_dxvk_conf(_prefix: &PathBuf) {}
+
+#[tauri::command]
+fn check_linux_deps() -> Result<serde_json::Value, String> {
+    #[cfg(target_os = "linux")]
+    {
+        let mut deps = Vec::new();
+        for (cmd, name) in [("wine", "Wine"), ("wine64", "Wine 64-bit"), ("dxvk", "DXVK")] {
+            let found = std::process::Command::new("sh")
+                .args(["-c", &format!("command -v {} >/dev/null 2>&1", cmd)])
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            deps.push(serde_json::json!({"name": name, "command": cmd, "installed": found}));
+        }
+        // Vulkan loader check (32-bit needs i386 on Debian).
+        let vulkan_ok = std::process::Command::new("sh")
+            .args(["-c", "command -v vulkaninfo >/dev/null 2>&1 && vulkaninfo --summary >/dev/null 2>&1"])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        return Ok(serde_json::json!({
+            "deps": deps,
+            "vulkan_working": vulkan_ok,
+        }));
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Ok(serde_json::json!({"linux": false}))
     }
 }
 
@@ -1172,6 +1249,7 @@ pub fn run() {
             launch_optimizer,
             check_for_update,
             download_and_install_update,
+            check_linux_deps,
         ])
         .run(tauri::generate_context!())
         .expect("error while running application");

@@ -67,6 +67,9 @@ async function init() {
     el.statServer.textContent = config.server_address || '';
     $('#header-server').textContent = config.server_address || '';
     updateClientState();
+    // Show Linux deps check only on Linux
+    const isLinux = navigator.userAgent.includes('Linux');
+    if (isLinux) $('#btn-linux-deps').style.display = '';
   } catch (e) { console.error('Init failed:', e); }
 }
 
@@ -424,6 +427,30 @@ listen('client-progress', (event) => {
       el.dlBarStatus.textContent = p.message;
     }
   });
+
+// ── Linux Deps Check ────────────────────────────
+
+$('#btn-linux-deps')?.addEventListener('click', async () => {
+  try {
+    const result = await invoke('check_linux_deps');
+    if (!result.linux) return; // not on Linux, button hidden anyway
+    const missing = (result.deps || []).filter(d => !d.installed);
+    if (missing.length === 0 && result.vulkan_working) {
+      showToast('All Linux deps present ✅', 'success');
+    } else {
+      const lines = [];
+      for (const m of missing) lines.push(`• ${m.name} (${m.command})`);
+      if (!result.vulkan_working) lines.push('• Vulkan drivers/32-bit libs');
+      showToast('Missing: ' + lines.join(' '), 'error');
+      alert('Missing Linux dependencies:\n\n' + lines.join('\n') +
+        '\n\nInstall with:\n' +
+        'Debian/Ubuntu: sudo dpkg --add-architecture i386 && sudo apt install wine wine32 wine64 winetricks libvulkan1 libvulkan1:i386 mesa-vulkan-drivers mesa-vulkan-drivers:i386 && winetricks -q dxvk\n' +
+        'Arch: sudo pacman -S --needed wine winetricks dxvk lib32-mesa lib32-vulkan-icd-loader vulkan-icd-loader mesa');
+    }
+  } catch (e) {
+    showToast('Deps check failed: ' + e, 'error');
+  }
+});
 
 // ── Launcher Self-Update ─────────────────────────
 
