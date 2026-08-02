@@ -28,6 +28,7 @@ else
     APPIMAGETOOL="/tmp/appimagetool --appimage-extract-and-run"
 fi
 
+export APPIMAGE_EXTRACT_AND_RUN=1
 echo "Patching $APPIMAGE ..."
 
 TMPDIR=$(mktemp -d)
@@ -49,11 +50,12 @@ if ! grep -q "GSK_RENDERER=cairo" squashfs-root/AppRun; then
     exit 1
 fi
 
-ARCH=x86_64 $APPIMAGETOOL squashfs-root "$APPIMAGE" > /dev/null 2>&1 || {
+if ! ARCH=x86_64 $APPIMAGETOOL squashfs-root "$APPIMAGE" 2>&1 | tee /tmp/appimagetool-repack.log; then
     echo "ERROR: appimagetool repack failed" >&2
+    cat /tmp/appimagetool-repack.log 2>/dev/null || true
     rm -rf "$TMPDIR"
     exit 1
-}
+fi
 
 rm -rf "$TMPDIR"
 echo "Patched: $APPIMAGE"

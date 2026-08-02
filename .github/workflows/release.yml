@@ -60,12 +60,14 @@ jobs:
           prerelease: false
           args: --target x86_64-pc-windows-msvc
 
-      # Linux: build manually, then patch AppRun (EGL fix) BEFORE upload.
+      # Linux: build manually (without npm postbuild hook — that double-patches
+      # and can corrupt the file), then patch AppRun (EGL fix) BEFORE upload.
       - name: Build (Linux)
         if: matrix.platform == 'ubuntu-latest'
         run: |
-          npm run build
-          bash scripts/patch-appimage.sh || echo "AppImage patch skipped (non-fatal)"
+          npm run build:frontend
+          npx tauri build
+          bash scripts/patch-appimage.sh
 
       - name: Publish (Linux)
         if: matrix.platform == 'ubuntu-latest'
