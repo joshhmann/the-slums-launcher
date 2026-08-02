@@ -416,8 +416,11 @@ fn get_config(state: State<AppState>) -> Config {
 fn save_settings(state: State<AppState>, game_path: Option<String>) -> Result<(), String> {
     let path = state.config_path.clone();
     let mut config = state.config.lock().unwrap_or_else(|e| e.into_inner());
-    config.game_path = game_path;
-    save_config(&path, &config).map_err(|e| format!("Failed to save settings: {}", e))
+    if let Some(p) = game_path {
+        config.game_path = Some(p);
+        save_config(&path, &config).map_err(|e| format!("Failed to save settings: {}", e))?;
+    }
+    Ok(())
 }
 
 #[tauri::command]

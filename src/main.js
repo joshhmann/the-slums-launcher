@@ -188,7 +188,7 @@ $('#btn-change-path')?.addEventListener('click', async () => {
   try {
     const path = await invoke('select_game_path');
     if (path) {
-      await invoke('save_settings', { gamePath: path });
+      await invoke('save_settings', { game_path: path });
       showToast('Game path updated', 'success');
       updateClientState();
     }
@@ -214,7 +214,6 @@ $('#btn-add-existing')?.addEventListener('click', async () => {
   try {
     const path = await invoke('select_game_path');
     if (!path) return;
-    gamePath.value = path;
     config.game_path = path;
     await invoke('save_settings', { game_path: path });
     updateClientState();
