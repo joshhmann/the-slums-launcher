@@ -79,31 +79,27 @@ async function updateClientState() {
   // Don't swap views mid-download: WoW.exe exists on disk early in the sync,
   // so get_client_status would report "ready" while the client is incomplete.
   if (isDownloading) return;
+  let status = null;
   try {
-    clientStatus = await invoke('get_client_status');
+    status = await invoke('get_client_status');
   } catch (e) {
-    clientStatus = null;
+    console.error('get_client_status failed:', e);
   }
+  clientStatus = status;
   refreshOptimizerState();
+  applyClientView();
+}
 
+// Deterministic view switch based on the latest client status.
+function applyClientView() {
   el.stateNotInstalled.classList.add('hidden');
   el.stateReady.classList.add('hidden');
 
   const s = clientStatus;
   if (!s || s.phase === 'not_installed') {
     el.stateNotInstalled.classList.remove('hidden');
-    // Look for an existing client nearby and offer to add it.
-    try {
-      const found = await invoke('detect_clients');
-      const existingRow = $('#existing-found');
-      if (existingRow && found && found.length > 0) {
-        existingRow.classList.remove('hidden');
-        $('#existing-path').textContent = found[0];
-        $('#existing-path').dataset.path = found[0];
-      } else if (existingRow) {
-        existingRow.classList.add('hidden');
-      }
-    } catch (e) { /* detection is best-effort */ }
+    // Offer a found client if one exists nearby.
+    detectClientsForUI();
   } else {
     el.stateReady.classList.remove('hidden');
     showReadyState();
@@ -115,6 +111,23 @@ async function updateClientState() {
       updateBtn.textContent = 'Update Game';
       updateBtn.classList.remove('update-flag');
     }
+  }
+}
+
+async function detectClientsForUI() {
+  const existingRow = $('#existing-found');
+  if (!existingRow) return;
+  try {
+    const found = await invoke('detect_clients');
+    if (found && found.length > 0) {
+      existingRow.classList.remove('hidden');
+      $('#existing-path').textContent = found[0];
+      $('#existing-path').dataset.path = found[0];
+    } else {
+      existingRow.classList.add('hidden');
+    }
+  } catch (e) {
+    existingRow.classList.add('hidden');
   }
 }
 
@@ -178,11 +191,9 @@ $('#btn-check-update')?.addEventListener('click', async () => {
 
 $('#btn-play')?.addEventListener('click', async () => {
   if (isDownloading) return;
+  isDownloading = true;
+  showDlBar('Launching...', 0);
   try {
-    // DXVK first-launch setup can take a while — show progress bar
-    const status = await invoke('get_client_status');
-    isDownloading = true;
-    showDlBar('Launching...', 0);
     await invoke('launch_game');
     isDownloading = false;
     hideDlBar();
@@ -226,11 +237,20 @@ $('#btn-use-found')?.addEventListener('click', async () => {
   try {
     const path = $('#existing-path').dataset.path;
     if (!path) return;
+    const btn = $('#btn-use-found');
+    if (btn) { btn.textContent = 'Adding...'; btn.disabled = true; }
     config.game_path = path;
     await invoke('save_settings', { game_path: path });
-    updateClientState();
-    showToast('Using existing client at ' + path, 'success');
+    clientStatus = null;
+    await updateClientState();
+    if (btn) { btn.disabled = false; }
+    if (clientStatus && clientStatus.phase !== 'not_installed') {
+      showToast('Using existing client — ready to play!', 'success');
+    } else {
+      showToast('Path saved, but the client looks incomplete: ' + path, 'error');
+    }
   } catch (e) {
+    if (btn) btn.disabled = false;
     showToast('Failed: ' + e, 'error');
   }
 });
@@ -243,8 +263,13 @@ $('#btn-add-existing')?.addEventListener('click', async () => {
     if (!path) return;
     config.game_path = path;
     await invoke('save_settings', { game_path: path });
-    updateClientState();
-    showToast('Game path set', 'success');
+    clientStatus = null;
+    await updateClientState();
+    if (clientStatus && clientStatus.phase === 'not_installed') {
+      showToast('Path saved, but no wow.exe found there: ' + path, 'error');
+    } else {
+      showToast('Game path set — ready to play!', 'success');
+    }
   } catch (e) {
     showToast('Failed: ' + e, 'error');
   }
