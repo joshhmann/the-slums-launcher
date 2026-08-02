@@ -19,9 +19,7 @@ jobs:
       matrix:
         include:
           - platform: windows-latest
-            args: --target x86_64-pc-windows-msvc
           - platform: ubuntu-latest
-            args: ""
 
     runs-on: ${{ matrix.platform }}
     steps:
@@ -40,6 +38,8 @@ jobs:
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
 
       - name: Cache cargo
         uses: swatinem/rust-cache@v2
@@ -49,7 +49,9 @@ jobs:
       - name: Install deps
         run: npm ci
 
-      - name: Build & Publish
+      # Windows: build + publish in one step via tauri-action (no patch needed).
+      - name: Build & Publish (Windows)
+        if: matrix.platform == 'windows-latest'
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -59,4 +61,26 @@ jobs:
           releaseBody: "The Slums Launcher build."
           releaseDraft: false
           prerelease: false
-          args: ${{ matrix.args }}
+          args: --target x86_64-pc-windows-msvc
+
+      # Linux: build manually, then patch AppRun (EGL fix) BEFORE upload.
+      - name: Build (Linux)
+        if: matrix.platform == 'ubuntu-latest'
+        run: |
+          npm run build
+          bash scripts/patch-appimage.sh || echo "AppImage patch skipped (non-fatal)"
+
+      - name: Publish (Linux)
+        if: matrix.platform == 'ubuntu-latest'
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: stable
+          releaseName: "The Slums Launcher — v__VERSION__"
+          releaseBody: "The Slums Launcher build."
+          releaseDraft: false
+          prerelease: false
+          # Build already done above (patched AppImage); just upload bundles
+          # from target/release/bundle/ and write latest.json for the updater.
+          tauriScript: "true"
