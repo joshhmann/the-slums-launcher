@@ -861,6 +861,120 @@ async fn repair_game(
     download_client(app, state).await
 }
 
+// ── Client Tools ─────────────────────────────────────────────
+
+const OPTIMIZER_RELEASE_URL: &str = "https://api.github.com/repos/suprepupre/wow-optimize/releases/latest";
+const OPTIMIZER_ASSET_PATTERN: &str = "Release.7z";
+
+#[tauri::command]
+fn launch_patcher(state: State<AppState>) -> Result<(), String> {
+    let config = state.config.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = game_dir(&config).ok_or("Game client not installed")?;
+
+    // Prefer the root patchmenu.exe (the HD client's toggle), fall back to the
+    // nested patchmenu/ folder copy.
+    let candidates = [
+        dir.join("patchmenu.exe"),
+        dir.join("patchmenu").join("patchmenu.exe"),
+    ];
+    let exe = candidates.iter().find(|p| p.exists())
+        .ok_or("patchmenu.exe not found in client — run Update Game first")?;
+
+    let child = std::process::Command::new(exe)
+        .current_dir(&dir)
+        .spawn()
+        .map_err(|e| format!("Failed to launch patcher: {}", e))?;
+    let _ = child;
+    Ok(())
+}
+
+#[tauri::command]
+fn is_optimizer_installed(state: State<AppState>) -> bool {
+    let config = state.config.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(dir) = game_dir(&config) else { return false };
+    dir.join("wow_optimize.dll").exists() || dir.join("version.dll").exists()
+}
+
+#[tauri::command]
+async fn install_optimizer(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<String, String> {
+    let config = state.config.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let dir = game_dir(&config).ok_or("Game client not installed")?;
+
+    emit(&app, "client-progress", ClientSyncProgress {
+        downloaded: 0, total: 1, speed: "".into(),
+        phase: "connecting".into(), message: "Fetching latest wow-optimize release...".into(),
+    })?;
+
+    // Find the latest release asset URL.
+    let client = http_client()?;
+    let resp = tokio::time::timeout(Duration::from_secs(30), client.get(OPTIMIZER_RELEASE_URL)
+        .header("User-Agent", "the-slums-launcher").send())
+        .await.map_err(|_| "Timed out fetching release info".to_string())?
+        .map_err(|e| format!("Failed to fetch release info: {}", e))?;
+    let release: serde_json::Value = resp.json().await
+        .map_err(|e| format!("Invalid release JSON: {}", e))?;
+    let asset_url = release["assets"].as_array().and_then(|arr| arr.iter().find(|a|
+        a["name"].as_str().map_or(false, |n| n.contains(OPTIMIZER_ASSET_PATTERN))))
+        .and_then(|a| a["browser_download_url"].as_str().map(String::from))
+        .ok_or("Could not find optimizer release asset (Release.7z)".to_string())?;
+
+    emit(&app, "client-progress", ClientSyncProgress {
+        downloaded: 0, total: 1, speed: "".into(),
+        phase: "syncing".into(), message: "Downloading wow-optimize...".into(),
+    })?;
+
+    // Download the archive.
+    let bytes = download_file(&client, &asset_url, "wow-optimize").await?;
+
+    // Write to a temp archive, extract, remove.
+    let tmp_archive = dir.join(".wow-optimize.7z");
+    std::fs::write(&tmp_archive, &bytes).map_err(|e| e.to_string())?;
+
+    let result = extract_archive(&tmp_archive, &dir);
+    let _ = std::fs::remove_file(&tmp_archive);
+    result?;
+
+    emit(&app, "client-progress", ClientSyncProgress {
+        downloaded: 1, total: 1, speed: "".into(),
+        phase: "complete".into(), message: "wow-optimize installed!".into(),
+    })?;
+    Ok("Installed".into())
+}
+
+#[tauri::command]
+fn remove_optimizer(state: State<AppState>) -> Result<(), String> {
+    let config = state.config.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = game_dir(&config).ok_or("Game client not installed")?;
+    for name in ["wow_optimize.dll", "version.dll", "wow_optimize_launcher.exe"] {
+        let p = dir.join(name);
+        if p.exists() { std::fs::remove_file(&p).map_err(|e| format!("Failed to remove {}: {}", name, e))?; }
+    }
+    Ok(())
+}
+
+fn extract_archive(archive: &PathBuf, dest: &PathBuf) -> Result<(), String> {
+    // 7z archive: use the 7z binary to extract flat (no subfolder). The release
+    // is a flat archive containing version.dll, wow_optimize.dll and
+    // wow_optimize_launcher.exe directly at the client root.
+    for name in ["version.dll", "wow_optimize.dll", "wow_optimize_launcher.exe"] {
+        let target = dest.join(name);
+        if target.exists() { let _ = std::fs::remove_file(&target); }
+    }
+    let archive_str = archive.to_string_lossy().to_string();
+    let dest_str = dest.to_string_lossy().to_string();
+    // `7z e` extracts all files flat into the destination (no paths).
+    for cmd in ["7z", "7za", "7zz", "bsdtar"] {
+        let args: Vec<String> = match cmd {
+            "bsdtar" => vec!["-xf".into(), archive_str.clone(), "-C".into(), dest_str.clone()],
+            _ => vec!["e".into(), archive_str.clone(), format!("-o{}", dest_str)],
+        };
+        if let Ok(out) = std::process::Command::new(cmd).args(&args).output() {
+            if out.status.success() { return Ok(()); }
+        }
+    }
+    Err("Could not extract archive — 7z not available".into())
+}
+
 // ── App entry ───────────────────────────────────────────────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -905,6 +1019,10 @@ pub fn run() {
             pause_download,
             resume_download,
             repair_game,
+            launch_patcher,
+            is_optimizer_installed,
+            install_optimizer,
+            remove_optimizer,
         ])
         .run(tauri::generate_context!())
         .expect("error while running application");

@@ -81,6 +81,7 @@ async function updateClientState() {
   } catch (e) {
     clientStatus = null;
   }
+  refreshOptimizerState();
 
   el.stateNotInstalled.classList.add('hidden');
   el.stateReady.classList.add('hidden');
@@ -208,6 +209,60 @@ $('#btn-add-existing')?.addEventListener('click', async () => {
     updateClientState();
     showToast('Game path set', 'success');
   } catch (e) {
+    showToast('Failed: ' + e, 'error');
+  }
+});
+
+// ── Client Tools ─────────────────────────────────
+
+let optimizerInstalled = false;
+
+async function refreshOptimizerState() {
+  try {
+    optimizerInstalled = await invoke('is_optimizer_installed');
+  } catch (e) {
+    optimizerInstalled = false;
+  }
+  const btn = $('#btn-install-optimizer');
+  if (!btn) return;
+  if (optimizerInstalled) {
+    btn.textContent = 'Remove';
+    btn.classList.add('btn-danger');
+    btn.classList.remove('btn-secondary');
+  } else {
+    btn.textContent = 'Install';
+    btn.classList.remove('btn-danger');
+    btn.classList.add('btn-secondary');
+  }
+}
+
+$('#btn-launch-patcher')?.addEventListener('click', async () => {
+  try {
+    await invoke('launch_patcher');
+    showToast('Patch menu launched', 'success');
+  } catch (e) {
+    showToast('Failed: ' + e, 'error');
+  }
+});
+
+$('#btn-install-optimizer')?.addEventListener('click', async () => {
+  if (isDownloading) return;
+  try {
+    if (optimizerInstalled) {
+      await invoke('remove_optimizer');
+      showToast('wow-optimize removed', 'success');
+    } else {
+      isDownloading = true;
+      showDlBar('Installing wow-optimize...', 0);
+      await invoke('install_optimizer');
+      isDownloading = false;
+      hideDlBar();
+      showToast('wow-optimize installed — launch the game via wow_optimize_launcher.exe', 'success');
+    }
+    refreshOptimizerState();
+  } catch (e) {
+    isDownloading = false;
+    hideDlBar();
     showToast('Failed: ' + e, 'error');
   }
 });
