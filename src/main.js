@@ -245,6 +245,15 @@ $('#btn-launch-patcher')?.addEventListener('click', async () => {
   }
 });
 
+$('#btn-launch-optimizer')?.addEventListener('click', async () => {
+  try {
+    await invoke('launch_optimizer');
+    showToast('wow-optimize launcher opened', 'success');
+  } catch (e) {
+    showToast('Failed: ' + e, 'error');
+  }
+});
+
 $('#btn-install-optimizer')?.addEventListener('click', async () => {
   if (isDownloading) return;
   try {

@@ -1026,6 +1026,24 @@ fn remove_optimizer(state: State<AppState>) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+fn launch_optimizer(state: State<AppState>) -> Result<(), String> {
+    let config = state.config.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = game_dir(&config).ok_or("Game client not installed")?;
+    let exe = dir.join("wow_optimize_launcher.exe");
+    if !exe.exists() {
+        return Err("wow-optimize is not installed — click Install first".into());
+    }
+    let child = std::process::Command::new(&exe)
+        .current_dir(&dir)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| format!("Failed to launch optimizer: {}", e))?;
+    let _ = child;
+    Ok(())
+}
+
 fn extract_archive(archive: &PathBuf, dest: &PathBuf) -> Result<(), String> {
     // 7z archive: use the 7z binary to extract flat (no subfolder). The release
     // is a flat archive containing version.dll, wow_optimize.dll and
@@ -1097,6 +1115,7 @@ pub fn run() {
             is_optimizer_installed,
             install_optimizer,
             remove_optimizer,
+            launch_optimizer,
         ])
         .run(tauri::generate_context!())
         .expect("error while running application");
